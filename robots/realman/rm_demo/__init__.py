@@ -1,0 +1,2 @@
+"""Static RealMan demo package."""
+

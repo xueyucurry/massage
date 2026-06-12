@@ -1,0 +1,60 @@
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv-noetic/
+env/.venv/
+
+# Local secrets/config. Keep checked-in templates visible.
+*.env
+!*.template.env
+!*.site_template.env
+
+# Logs and generated runtime state
+*.log
+.ros2_cmd_server.log
+.ros2_runtime_libs/
+robots/fairino/.ros2_cmd_server.log
+robots/fairino/.ros2_runtime_libs/
+robots/fairino/ft_locked_trajectory_output/
+robots/fairino/robot_meridian_output/
+robots/fairino/rtmpose_hip_knee_output/
+robots/fairino/rtmpose_thigh_confirm_output/
+shared/camera/rosbags/
+
+# Backups, scratch files, and large local/runtime artifacts
+*.bak
+*.bak_*
+*.mcap
+*.bag
+*.db3
+*.pth
+*.pt
+*.onnx
+*.engine
+*.deb
+*.whl
+robots/fairino/Untitled
+
+# ROS2 build outputs; install is tracked for the current runnable snapshot.
+robots/fairino/fairino_ros2/frcobot_ros2-master/build/
+robots/fairino/fairino_ros2/frcobot_ros2-master/log/
+robots/realman/massage_ws/build/
+robots/realman/massage_ws/install/
+robots/realman/massage_ws/log/
+robots/realman/rm_demo_output/
+robots/realman/rm_demo_debug/
+
+# Local metadata from previous tooling
+_meta/
+_meta/.git/
+_meta/.ros2_cmd_server.log
+_meta/__pycache__/
+
+# Downloaded/vendor package dumps kept locally only.
+robots/fairino/fairino-python-sdk-master (1)/
+robots/fairino/fairino_ros2/fairino_hardware.backup_*/
+robots/realman/rm_demo_pkgs/

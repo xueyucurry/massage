@@ -1,0 +1,4 @@
+[submodule "shared/third_party/co-tracker"]
+	path = shared/third_party/co-tracker
+	url = https://github.com/facebookresearch/co-tracker.git
+	ignore = untracked

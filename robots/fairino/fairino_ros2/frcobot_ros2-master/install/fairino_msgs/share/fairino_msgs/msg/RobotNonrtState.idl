@@ -1,0 +1,219 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from fairino_msgs/msg/RobotNonrtState.msg
+// generated code does not contain a copyright notice
+
+
+module fairino_msgs {
+  module msg {
+    typedef uint8 uint8__6[6];
+    typedef uint8 uint8__8[8];
+    typedef uint8 uint8__4[4];
+    struct RobotNonrtState {
+      double j1_cur_pos;
+
+      double j2_cur_pos;
+
+      double j3_cur_pos;
+
+      double j4_cur_pos;
+
+      double j5_cur_pos;
+
+      double j6_cur_pos;
+
+      double j1_cur_tor;
+
+      double j2_cur_tor;
+
+      double j3_cur_tor;
+
+      double j4_cur_tor;
+
+      double j5_cur_tor;
+
+      double j6_cur_tor;
+
+      double cart_x_cur_pos;
+
+      double cart_y_cur_pos;
+
+      double cart_z_cur_pos;
+
+      double cart_a_cur_pos;
+
+      double cart_b_cur_pos;
+
+      double cart_c_cur_pos;
+
+      double flange_x_cur_pos;
+
+      double flange_y_cur_pos;
+
+      double flange_z_cur_pos;
+
+      double flange_a_cur_pos;
+
+      double flange_b_cur_pos;
+
+      double flange_c_cur_pos;
+
+      double exaxispos1;
+
+      double exaxispos2;
+
+      double exaxispos3;
+
+      double exaxispos4;
+
+      double ft_fx_data;
+
+      double ft_fy_data;
+
+      double ft_fz_data;
+
+      double ft_tx_data;
+
+      double ft_ty_data;
+
+      double ft_tz_data;
+
+      uint8 ft_actstatus;
+
+      uint8 robot_mode;
+
+      uint8 tool_num;
+
+      uint8 work_num;
+
+      uint8 prg_state;
+
+      uint8 abnormal_stop;
+
+      string prg_name;
+
+      uint8 prg_total_line;
+
+      uint8 prg_cur_line;
+
+      uint8 dgt_output_h;
+
+      uint8 dgt_output_l;
+
+      uint8 dgt_input_h;
+
+      uint8 dgt_input_l;
+
+      uint8 tl_dgt_output_l;
+
+      uint8 tl_dgt_input_l;
+
+      uint8 emg;
+
+      @verbatim (language="comment", text=
+        "V2.1 added")
+      uint8__6 safetyboxsig;
+
+      uint8 robot_motion_done;
+
+      uint8 grip_motion_done;
+
+      uint8 weldbreakoffstate;
+
+      uint8 weldarcstate;
+
+      double welding_voltage;
+
+      double welding_current;
+
+      double weldtrackspeed;
+
+      uint32 main_error_code;
+
+      uint32 sub_error_code;
+
+      uint8 check_sum;
+
+      uint64 timestamp;
+
+      string version;
+
+      uint8 tpd_exception;
+
+      uint8 alarm_reboot_robot;
+
+      uint8 modbusmasterconnectstate;
+
+      uint8 mdbsslaveconnect;
+
+      uint8 socket_conn_timeout;
+
+      uint8 socket_read_timeout;
+
+      uint8 btn_box_stop_signa;
+
+      uint8 strangeposflag;
+
+      uint8 drag_alarm;
+
+      uint8 alarm;
+
+      uint8 safetydoor_alarm;
+
+      uint8 safetyplanealarm;
+
+      uint8 motionalarm;
+
+      uint8 interferealarm;
+
+      uint16 endluaerrcode;
+
+      double dr_alarm;
+
+      uint16 udpcmdstate;
+
+      uint8 aliveslavenumerror;
+
+      uint16 gripperfaultnum;
+
+      uint8__8 slavecomerror;
+
+      uint8 cmdpointerror;
+
+      uint8 ioerror;
+
+      uint8 grippererro;
+
+      uint8 fileerror;
+
+      uint8 paraerror;
+
+      uint8 exaxis_out_slimit_error;
+
+      uint8__6 dr_com_err;
+
+      double dr_err;
+
+      double out_sflimit_err;
+
+      double collision_err;
+
+      uint8 weld_readystate;
+
+      uint8 alarm_check_emerg_stop_btn;
+
+      uint8 ts_web_state_com_error;
+
+      uint8 ts_tm_cmd_com_error;
+
+      uint8 ts_tm_state_com_error;
+
+      uint16 ctrlboxerror;
+
+      uint8 safety_data_state;
+
+      uint8 forcesensorerrstate;
+
+      uint8__4 ctrlopenluaerrcode;
+    };
+  };
+};

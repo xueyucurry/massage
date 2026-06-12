@@ -1,0 +1,1 @@
+/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master/build/fairino5_v6_moveit2_config/ament_cmake_core/fairino5_v6_moveit2_configConfig-version.cmake

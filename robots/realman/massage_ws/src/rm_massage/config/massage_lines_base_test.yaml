@@ -1,0 +1,13 @@
+lines:
+  - name: "base_test_5cm"
+    frame: "robot_base"
+    normal_body: [0.0, 0.0, 1.0]
+    speed_mps: 0.005
+    force_n: 3.0
+    enabled: false
+    points_body:
+      - [0.000, 0.000, 0.000]
+      - [0.012, 0.000, 0.000]
+      - [0.025, 0.000, 0.000]
+      - [0.038, 0.000, 0.000]
+      - [0.050, 0.000, 0.000]

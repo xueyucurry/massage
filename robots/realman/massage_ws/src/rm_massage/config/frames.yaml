@@ -1,0 +1,36 @@
+frames:
+  robot_base: "robot_base"
+  flange: "flange"
+  tcp: "massage_tcp"
+  camera: "camera_color_optical_frame"
+  body: "body_frame"
+
+tcp:
+  type: "sphere"
+  radius_m: 0.018
+  press_axis: "z"
+  press_direction: "+z"
+
+body_frame:
+  convention:
+    x: "along_spine_up"
+    y: "from_spine_to_side"
+    z: "surface_outward"
+
+topics:
+  arm_position: "/rm_driver/udp_arm_position"
+  six_force: "/rm_driver/udp_six_force"
+  joint_states: "/joint_states"
+  movej_p_cmd: "/rm_driver/movej_p_cmd"
+  movel_cmd: "/rm_driver/movel_cmd"
+  clear_force_data_cmd: "/rm_driver/clear_force_data_cmd"
+  set_force_position_cmd: "/rm_driver/set_force_postion_cmd"
+  stop_force_position_cmd: "/rm_driver/stop_force_postion_cmd"
+  motion_stop_cmd: "/rm_driver/stop_cmd"
+
+message_types:
+  six_force: "rm_ros_interfaces/msg/Sixforce"
+  movej_p: "rm_ros_interfaces/msg/Movejp"
+  movel: "rm_ros_interfaces/msg/Movel"
+  set_force_position: "rm_ros_interfaces/msg/Setforceposition"
+  empty: "std_msgs/msg/Empty"

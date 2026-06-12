@@ -1,0 +1,713 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FAIRINO_DIR="${ROOT_DIR}/robots/fairino"
+ROS2_WS="${FAIRINO_DIR}/fairino_ros2/frcobot_ros2-master"
+ROS2_LOG="${FAIRINO_DIR}/.ros2_cmd_server.log"
+PID_FILE="${FAIRINO_DIR}/.ros2_cmd_server.pid"
+RUNTIME_LIB_DIR="${FAIRINO_DIR}/.ros2_runtime_libs"
+MOVEIT_LOG="${FAIRINO_DIR}/.moveit.log"
+MOVEIT_PID_FILE="${FAIRINO_DIR}/.moveit.pid"
+HOME_POSE_FILE="${FAIRINO_DIR}/massage_home_pose.json"
+
+export ROBOT_IP="${ROBOT_IP:-192.168.58.2}"
+export ROS_LOCALHOST_ONLY="${LASTTIME_ROS_LOCALHOST_ONLY:-1}"
+export FAIRINO_REMOTE_SERVICE="${FAIRINO_REMOTE_SERVICE:-fairino_remote_command_service}"
+export FAIRINO_STATE_TOPIC="${FAIRINO_STATE_TOPIC:-nonrt_state_data}"
+export MASSAGE_MOVEIT_ENABLE="${MASSAGE_MOVEIT_ENABLE:-1}"
+export MASSAGE_MOVEIT_CONFIG_PACKAGE="${MASSAGE_MOVEIT_CONFIG_PACKAGE:-fairino5_v6_moveit2_config}"
+export MOVEIT_GROUP_NAME="${MOVEIT_GROUP_NAME:-fairino5_v6_group}"
+export MOVEIT_IK_LINK_NAME="${MOVEIT_IK_LINK_NAME:-wrist3_link}"
+export MOVEIT_IK_SERVICE="${MOVEIT_IK_SERVICE:-compute_ik}"
+export MASSAGE_HOME_POSE_FILE="${MASSAGE_HOME_POSE_FILE:-${HOME_POSE_FILE}}"
+export MASSAGE_HOME_MOVE_VEL="${MASSAGE_HOME_MOVE_VEL:-20}"
+export MASSAGE_HOME_SAFE_Z_MM="${MASSAGE_HOME_SAFE_Z_MM:-300}"
+export MASSAGE_HOME_ON_START="${MASSAGE_HOME_ON_START:-1}"
+export MASSAGE_HOME_ON_STOP="${MASSAGE_HOME_ON_STOP:-1}"
+
+SERVICE_REGEX="/?${FAIRINO_REMOTE_SERVICE}"
+SERVER_PATTERN='(^|/)ros2_cmd_server([[:space:]]|$)|ros2 run fairino_hardware ros2_cmd_server'
+RUNNER_PATTERN='(^|/)run_lasttime_ros2\.sh([[:space:]]|$)|/home/franka/massage/env/\.venv/bin/python[[:space:]]+ft\.py|(^|/)python[0-9.]*[[:space:]]+ft\.py'
+MOVEIT_PATTERN='ros2 launch .*_moveit2_config .*demo\.launch\.py|/move_group|(^|/)move_group([[:space:]]|$)|ros2_control_node'
+
+usage() {
+  cat <<EOF
+Usage:
+  ./massage start      Start FAIRINO ROS2 service, then run ft.py
+  ./massage restart    Stop then start FAIRINO ROS2 and MoveIt services
+  ./massage stop       Stop FAIRINO ROS2, MoveIt, and residual ft.py runner
+  ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
+  ./massage record-home Record current TCP pose as start/stop return pose
+  ./massage home        Move to recorded start/stop return pose
+  ./massage help       Show this help
+
+Notes:
+  start runs ft.py in the foreground after ROS2 probe passes.
+  start and stop return to the recorded pose when MASSAGE_HOME_ON_START/STOP is enabled.
+  stop is not a physical emergency stop. Use the robot emergency stop button when needed.
+
+Environment:
+  ROBOT_IP=${ROBOT_IP}
+  LASTTIME_ROS_LOCALHOST_ONLY=${LASTTIME_ROS_LOCALHOST_ONLY:-1}
+  FAIRINO_REMOTE_SERVICE=${FAIRINO_REMOTE_SERVICE}
+  FAIRINO_STATE_TOPIC=${FAIRINO_STATE_TOPIC}
+  MASSAGE_MOVEIT_ENABLE=${MASSAGE_MOVEIT_ENABLE}
+  MASSAGE_MOVEIT_CONFIG_PACKAGE=${MASSAGE_MOVEIT_CONFIG_PACKAGE}
+  MOVEIT_GROUP_NAME=${MOVEIT_GROUP_NAME}
+  MOVEIT_IK_LINK_NAME=${MOVEIT_IK_LINK_NAME}
+  MASSAGE_HOME_POSE_FILE=${MASSAGE_HOME_POSE_FILE}
+  MASSAGE_HOME_MOVE_VEL=${MASSAGE_HOME_MOVE_VEL}
+  MASSAGE_HOME_SAFE_Z_MM=${MASSAGE_HOME_SAFE_Z_MM}
+EOF
+}
+
+setup_ros_env() {
+  if [[ ! -f /opt/ros/humble/setup.bash ]]; then
+    echo "找不到 ROS2 Humble 环境: /opt/ros/humble/setup.bash" >&2
+    exit 1
+  fi
+  if [[ ! -f "${ROS2_WS}/install/setup.bash" ]]; then
+    echo "找不到 FAIRINO ROS2 install 环境: ${ROS2_WS}/install/setup.bash" >&2
+    exit 1
+  fi
+
+  set +u
+  source /opt/ros/humble/setup.bash
+  source "${ROS2_WS}/install/setup.bash"
+  set -u
+
+  mkdir -p "${RUNTIME_LIB_DIR}"
+  FAIRINO_RUNTIME_LIB="${FAIRINO_RUNTIME_LIB:-${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2.2.3}"
+  if [[ ! -f "${FAIRINO_RUNTIME_LIB}" ]]; then
+    FAIRINO_RUNTIME_LIB="${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2"
+  fi
+  if [[ ! -f "${FAIRINO_RUNTIME_LIB}" ]]; then
+    echo "未找到 FAIRINO 运行库 libfairino.so" >&2
+    exit 1
+  fi
+
+  ln -sf "${FAIRINO_RUNTIME_LIB}" "${RUNTIME_LIB_DIR}/libfairino.so.2"
+  ln -sf "${FAIRINO_RUNTIME_LIB}" "${RUNTIME_LIB_DIR}/libfairino.so"
+  export LD_LIBRARY_PATH="${RUNTIME_LIB_DIR}:${ROS2_WS}/install/fairino_hardware/lib:${ROS2_WS}/install/fairino_msgs/lib:${LD_LIBRARY_PATH:-}"
+
+  if [[ -x "${FAIRINO_DIR}/.venv/bin/python" ]]; then
+    PYTHON_BIN="${FAIRINO_DIR}/.venv/bin/python"
+  elif [[ -x "${ROOT_DIR}/env/.venv/bin/python" ]]; then
+    PYTHON_BIN="${ROOT_DIR}/env/.venv/bin/python"
+  else
+    PYTHON_BIN="python3"
+  fi
+  export PYTHON_BIN
+}
+
+reset_ros2_discovery() {
+  ros2 daemon stop >/dev/null 2>&1 || true
+  ros2 daemon start >/dev/null 2>&1 || true
+}
+
+service_ready() {
+  if command -v rg >/dev/null 2>&1; then
+    ros2 service list 2>/dev/null | rg -qx "${SERVICE_REGEX}"
+  else
+    ros2 service list 2>/dev/null | grep -Eq "^${SERVICE_REGEX}$"
+  fi
+}
+
+server_process_exists() {
+  pgrep -f "${SERVER_PATTERN}" >/dev/null 2>&1
+}
+
+moveit_process_exists() {
+  pgrep -f "${MOVEIT_PATTERN}" >/dev/null 2>&1
+}
+
+moveit_ready() {
+  local service="/${MOVEIT_IK_SERVICE#/}"
+  if command -v rg >/dev/null 2>&1; then
+    ros2 service list 2>/dev/null | rg -qx "${service}"
+  else
+    ros2 service list 2>/dev/null | grep -Eq "^${service}$"
+  fi
+}
+
+probe_service() {
+  local probe_timeout_s="${MASSAGE_PROBE_TIMEOUT:-35s}"
+  timeout --kill-after=2s "${probe_timeout_s}" "${PYTHON_BIN}" - <<'PY'
+import os
+import sys
+
+import rclpy
+from fairino_msgs.msg import RobotNonrtState
+from fairino_msgs.srv import RemoteCmdInterface
+
+service_name = os.environ.get("FAIRINO_REMOTE_SERVICE", "fairino_remote_command_service")
+state_topic = os.environ.get("FAIRINO_STATE_TOPIC", "nonrt_state_data")
+
+def _exit(code):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+rclpy.init(args=None)
+node = rclpy.create_node("massage_ros2_probe")
+client = node.create_client(RemoteCmdInterface, service_name)
+state = {"msg": None}
+
+def _on_state(msg):
+    state["msg"] = msg
+
+sub = node.create_subscription(RobotNonrtState, state_topic, _on_state, 10)
+
+try:
+    service_wait_s = float(os.environ.get("MASSAGE_PROBE_SERVICE_WAIT_S", "8.0"))
+    state_wait_s = float(os.environ.get("MASSAGE_PROBE_STATE_WAIT_S", "8.0"))
+    call_wait_s = float(os.environ.get("MASSAGE_PROBE_CALL_WAIT_S", "8.0"))
+
+    if not client.wait_for_service(timeout_sec=service_wait_s):
+        print("PROBE_ERR: service not ready", file=sys.stderr)
+        _exit(1)
+
+    deadline = node.get_clock().now().nanoseconds + int(state_wait_s * 1e9)
+    while state["msg"] is None and node.get_clock().now().nanoseconds < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if state["msg"] is None:
+        print("PROBE_ERR: no state message", file=sys.stderr)
+        _exit(2)
+
+    req = RemoteCmdInterface.Request()
+    req.cmd_str = "SetSpeed(30)"
+    future = client.call_async(req)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=call_wait_s)
+    if not future.done() or future.exception() is not None or future.result() is None:
+        print(f"PROBE_ERR: service call failed: {future.exception()}", file=sys.stderr)
+        _exit(3)
+
+    cmd_res = str(future.result().cmd_res).strip()
+    print(f"ROS2 控制探针返回: {cmd_res}")
+    msg = state["msg"]
+    print(
+        "ROS2 状态探针位姿: "
+        f"{msg.cart_x_cur_pos:.3f}, {msg.cart_y_cur_pos:.3f}, {msg.cart_z_cur_pos:.3f}, "
+        f"{msg.cart_a_cur_pos:.3f}, {msg.cart_b_cur_pos:.3f}, {msg.cart_c_cur_pos:.3f}"
+    )
+    _exit(0 if cmd_res == "0" else 4)
+finally:
+    node.destroy_subscription(sub)
+    node.destroy_node()
+    rclpy.shutdown()
+PY
+}
+
+probe_with_retries() {
+  local attempts="${MASSAGE_PROBE_RETRIES:-8}"
+  local delay_s="${MASSAGE_PROBE_RETRY_DELAY_S:-2}"
+  local attempt
+
+  for attempt in $(seq 1 "${attempts}"); do
+    if probe_service; then
+      return 0
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      echo "ROS2 控制探针未就绪，${delay_s}s 后重试 (${attempt}/${attempts})"
+      sleep "${delay_s}"
+    fi
+  done
+  return 1
+}
+
+home_pose_enabled() {
+  local value="${1:-1}"
+  [[ "${value}" == "1" || "${value}" == "true" || "${value}" == "yes" || "${value}" == "on" ]]
+}
+
+home_pose_tool() {
+  local mode="$1"
+  MASSAGE_HOME_MODE="${mode}" "${PYTHON_BIN}" - <<'PY'
+import json
+import math
+import os
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import rclpy
+from fairino_msgs.msg import RobotNonrtState
+from fairino_msgs.srv import RemoteCmdInterface
+
+service_name = os.environ.get("FAIRINO_REMOTE_SERVICE", "fairino_remote_command_service")
+state_topic = os.environ.get("FAIRINO_STATE_TOPIC", "nonrt_state_data")
+pose_file = Path(os.environ.get("MASSAGE_HOME_POSE_FILE", "robots/fairino/massage_home_pose.json"))
+mode = os.environ.get("MASSAGE_HOME_MODE", "move")
+vel = int(float(os.environ.get("MASSAGE_HOME_MOVE_VEL", "20")))
+safe_z = float(os.environ.get("MASSAGE_HOME_SAFE_Z_MM", "300"))
+tool = int(float(os.environ.get("ROS2_TOOL", "0")))
+user = int(float(os.environ.get("ROS2_USER", "0")))
+service_wait_s = float(os.environ.get("MASSAGE_HOME_SERVICE_WAIT_S", "8.0"))
+state_wait_s = float(os.environ.get("MASSAGE_HOME_STATE_WAIT_S", "8.0"))
+call_wait_s = float(os.environ.get("MASSAGE_HOME_CALL_WAIT_S", "12.0"))
+motion_wait_s = float(os.environ.get("MASSAGE_HOME_MOTION_WAIT_S", "30.0"))
+pose_tol_mm = float(os.environ.get("MASSAGE_HOME_POSE_TOL_MM", "3.0"))
+ori_tol_deg = float(os.environ.get("MASSAGE_HOME_ORI_TOL_DEG", "3.0"))
+z_tol_mm = float(os.environ.get("MASSAGE_HOME_Z_TOL_MM", "2.0"))
+
+
+def _fmt(value):
+    return f"{float(value):.6f}".rstrip("0").rstrip(".")
+
+
+def _ret_code(text):
+    head = str(text).strip().split(",", 1)[0]
+    try:
+        return int(float(head))
+    except Exception:
+        return -9999
+
+
+def _pose_from_msg(msg):
+    return [
+        float(msg.cart_x_cur_pos),
+        float(msg.cart_y_cur_pos),
+        float(msg.cart_z_cur_pos),
+        float(msg.cart_a_cur_pos),
+        float(msg.cart_b_cur_pos),
+        float(msg.cart_c_cur_pos),
+    ]
+
+
+def _joints_from_msg(msg):
+    names = ["j1_cur_pos", "j2_cur_pos", "j3_cur_pos", "j4_cur_pos", "j5_cur_pos", "j6_cur_pos"]
+    joints = []
+    for name in names:
+        if not hasattr(msg, name):
+            return None
+        joints.append(float(getattr(msg, name)))
+    return joints
+
+
+def _pose_text(pose):
+    return "[" + ", ".join(_fmt(v) for v in pose) + "]"
+
+
+def _close(a, b):
+    pos = math.sqrt(sum((float(a[i]) - float(b[i])) ** 2 for i in range(3)))
+    ori = max(abs(float(a[i]) - float(b[i])) for i in range(3, 6))
+    return pos <= pose_tol_mm and ori <= ori_tol_deg, pos, ori
+
+
+rclpy.init(args=None)
+node = rclpy.create_node("massage_home_pose")
+client = node.create_client(RemoteCmdInterface, service_name)
+state = {"msg": None}
+
+
+def _on_state(msg):
+    state["msg"] = msg
+
+
+sub = node.create_subscription(RobotNonrtState, state_topic, _on_state, 10)
+
+
+def _wait_state(timeout_s):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+        if state["msg"] is not None:
+            return state["msg"]
+    raise RuntimeError(f"在 {timeout_s:.1f}s 内未收到状态话题: {state_topic}")
+
+
+def _call(cmd, timeout_s=call_wait_s, check=True):
+    req = RemoteCmdInterface.Request()
+    req.cmd_str = cmd
+    future = client.call_async(req)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_s)
+    if not future.done() or future.exception() is not None or future.result() is None:
+        raise RuntimeError(f"ROS2 指令超时或失败: {cmd}, exception={future.exception()}")
+    result = str(future.result().cmd_res).strip()
+    code = _ret_code(result)
+    if check and code != 0:
+        raise RuntimeError(f"ROS2 指令返回失败: {cmd}, ret={result}")
+    return code, result
+
+
+def _wait_motion(target):
+    deadline = time.time() + motion_wait_s
+    last_pose = None
+    while time.time() < deadline:
+        msg = _wait_state(1.0)
+        last_pose = _pose_from_msg(msg)
+        close, _, _ = _close(last_pose, target)
+        motion_done = getattr(msg, "motion_done", getattr(msg, "robot_motion_done", None))
+        if close and (motion_done is None or int(motion_done) == 1):
+            return True
+        time.sleep(0.05)
+    if last_pose is not None:
+        close, pos, ori = _close(last_pose, target)
+        if close:
+            print(f"回位等待超时，但当前位姿已接近目标 pos={pos:.2f}mm ori={ori:.2f}deg")
+            return True
+        print(f"回位等待超时，当前位姿未到目标 pos={pos:.2f}mm ori={ori:.2f}deg", file=sys.stderr)
+    return False
+
+
+def _move_pose(pose, label):
+    print(f"{label}: target={_pose_text(pose)}")
+    _call("CARTPoint(1," + ",".join(_fmt(v) for v in pose) + ")")
+    _call(f"MoveL(CART1,{vel},{tool},{user})")
+    if not _wait_motion(pose):
+        raise RuntimeError(f"{label}: 等待到位失败")
+
+
+try:
+    if not client.wait_for_service(timeout_sec=service_wait_s):
+        raise RuntimeError(f"ROS2 控制服务未就绪: {service_name}")
+
+    msg = _wait_state(state_wait_s)
+    current = _pose_from_msg(msg)
+
+    if mode == "record":
+        pose_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pose": current,
+            "joint_deg": _joints_from_msg(msg),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "robot_ip": os.environ.get("ROBOT_IP", ""),
+            "state_topic": state_topic,
+            "service_name": service_name,
+        }
+        pose_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"已记录回位姿态: {_pose_text(current)}")
+        print(f"保存到: {pose_file}")
+        sys.exit(0)
+
+    if not pose_file.exists():
+        print(f"未找到回位姿态文件，跳过回位: {pose_file}")
+        sys.exit(0)
+
+    payload = json.loads(pose_file.read_text(encoding="utf-8"))
+    home = [float(v) for v in payload["pose"]]
+    close, pos, ori = _close(current, home)
+    if close:
+        print(f"当前已接近记录位，跳过回位 pos={pos:.2f}mm ori={ori:.2f}deg")
+        sys.exit(0)
+
+    _call("ResetAllError()", check=False)
+    _call(f"SetSpeed({vel})", check=False)
+
+    transit_z = max(float(current[2]), float(home[2]), safe_z)
+    if float(current[2]) < transit_z - z_tol_mm:
+        lift = list(current)
+        lift[2] = transit_z
+        _move_pose(lift, "回位-当前位置竖直抬升")
+
+    high_home = list(home)
+    high_home[2] = transit_z
+    msg = _wait_state(state_wait_s)
+    current = _pose_from_msg(msg)
+    close_high, _, _ = _close(current, high_home)
+    if not close_high:
+        _move_pose(high_home, "回位-安全高度平移")
+
+    msg = _wait_state(state_wait_s)
+    current = _pose_from_msg(msg)
+    close_home, _, _ = _close(current, home)
+    if not close_home:
+        _move_pose(home, "回位-下降到记录位")
+
+    print(f"已回到记录位: {_pose_text(home)}")
+finally:
+    node.destroy_subscription(sub)
+    node.destroy_node()
+    rclpy.shutdown()
+PY
+}
+
+record_home_pose() {
+  home_pose_tool record
+}
+
+move_to_recorded_home() {
+  local context="${1:-回位}"
+  if [[ ! -f "${MASSAGE_HOME_POSE_FILE}" ]]; then
+    echo "${context}: 未记录回位姿态，跳过 (${MASSAGE_HOME_POSE_FILE})"
+    return 0
+  fi
+  echo "${context}: 准备回到记录位..."
+  home_pose_tool move
+}
+
+stop_runners() {
+  echo "停止 ft.py / run_lasttime_ros2.sh..."
+  pkill -TERM -f "${RUNNER_PATTERN}" >/dev/null 2>&1 || true
+  sleep 2
+  pkill -KILL -f "${RUNNER_PATTERN}" >/dev/null 2>&1 || true
+}
+
+stop_background_services() {
+  echo "停止 FAIRINO ROS2 / MoveIt 后台服务..."
+  pkill -TERM -f "${MOVEIT_PATTERN}" >/dev/null 2>&1 || true
+  pkill -TERM -f "${SERVER_PATTERN}" >/dev/null 2>&1 || true
+  sleep 2
+  pkill -KILL -f "${MOVEIT_PATTERN}" >/dev/null 2>&1 || true
+  pkill -KILL -f "${SERVER_PATTERN}" >/dev/null 2>&1 || true
+  rm -f "${PID_FILE}" "${MOVEIT_PID_FILE}"
+  reset_ros2_discovery
+  echo "已停止。注意：这不是实体急停；如需急停请使用机械臂急停按钮。"
+}
+
+clean_residual_processes() {
+  echo "清理 ROS2 / FAIRINO / MoveIt / ft.py 残留进程..."
+  local patterns=(
+    '/opt/ros/humble/lib/robot_state_publisher/[r]obot_state_publisher'
+    '/opt/ros/humble/lib/controller_manager/[s]pawner'
+    '/opt/ros/humble/lib/controller_manager/[r]os2_control_node'
+    '/opt/ros/humble/lib/moveit_ros_move_group/[m]ove_group'
+    '/opt/ros/humble/bin/[r]os2 service list'
+    '/opt/ros/humble/bin/[r]os2 topic list'
+    '/opt/ros/humble/bin/[r]os2 run fairino_hardware ros2_cmd_server'
+    'fairino_hardware/lib/fairino_hardware/[r]os2_cmd_server'
+    '[r]os2cli.daemon.daemonize'
+    '[r]os2 launch'
+    '[r]os2 run'
+    '[b]ash ./massage'
+    '[r]un_lasttime_ros2\.sh'
+    '[p]ython[0-9.]* .*ft\.py'
+    '[r]viz2'
+    '[r]ealsense2_camera'
+  )
+  local pids=""
+  local pattern
+  for pattern in "${patterns[@]}"; do
+    local found
+    found="$(pgrep -f "${pattern}" || true)"
+    if [[ -n "${found}" ]]; then
+      pids+=$'\n'"${found}"
+    fi
+  done
+  pids="$(
+    printf '%s\n' "${pids}" |
+      awk -v self="$$" -v parent="${PPID:-}" 'NF && $1 != self && $1 != parent && !seen[$1]++'
+  )"
+
+  if [[ -z "${pids}" ]]; then
+    echo "未发现 ROS2/FAIRINO/MoveIt/ft.py 残留进程。"
+  else
+    echo "准备终止以下 PID:"
+    printf '  %s\n' ${pids}
+    kill -TERM ${pids} 2>/dev/null || true
+    sleep 2
+
+    local still=""
+    local pid
+    for pid in ${pids}; do
+      if kill -0 "${pid}" 2>/dev/null; then
+        still+=" ${pid}"
+      fi
+    done
+
+    if [[ -n "${still}" ]]; then
+      echo "强制终止仍未退出的 PID:${still}"
+      kill -KILL ${still} 2>/dev/null || true
+    fi
+  fi
+
+  rm -f "${PID_FILE}" "${MOVEIT_PID_FILE}"
+  echo "清理完成。"
+}
+
+stop_processes() {
+  echo "停止按摩相关进程..."
+  stop_runners
+  if home_pose_enabled "${MASSAGE_HOME_ON_STOP}" && service_ready; then
+    if ! move_to_recorded_home "stop 回位"; then
+      echo "stop 回位失败，将继续停止后台服务。" >&2
+    fi
+  elif home_pose_enabled "${MASSAGE_HOME_ON_STOP}"; then
+    echo "stop 回位: ROS2 控制服务未就绪，跳过回位。"
+  fi
+  stop_background_services
+}
+
+start_server() {
+  echo "FAIRINO 运行库: ${FAIRINO_RUNTIME_LIB}"
+  echo "启动 FAIRINO ROS2 控制服务..."
+  : > "${ROS2_LOG}"
+  setsid nohup ros2 run fairino_hardware ros2_cmd_server --ros-args -p controller_ip:="${ROBOT_IP}" \
+    >"${ROS2_LOG}" 2>&1 < /dev/null &
+  local server_pid=$!
+  echo "${server_pid}" > "${PID_FILE}"
+
+  for _ in $(seq 1 "${MASSAGE_SERVICE_WAIT_RETRIES:-30}"); do
+    if ! kill -0 "${server_pid}" >/dev/null 2>&1; then
+      echo "ROS2 控制服务启动失败，日志如下："
+      tail -n 80 "${ROS2_LOG}" || true
+      return 1
+    fi
+    if service_ready; then
+      echo "ROS2 控制服务已就绪"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "等待 ROS2 控制服务超时，日志如下："
+  tail -n 80 "${ROS2_LOG}" || true
+  return 1
+}
+
+start_moveit() {
+  if [[ "${MASSAGE_MOVEIT_ENABLE}" != "1" && "${MASSAGE_MOVEIT_ENABLE}" != "true" && "${MASSAGE_MOVEIT_ENABLE}" != "yes" && "${MASSAGE_MOVEIT_ENABLE}" != "on" ]]; then
+    echo "MoveIt IK 服务未启用。"
+    return 0
+  fi
+
+  if moveit_ready; then
+    echo "MoveIt IK 服务已就绪。"
+    return 0
+  fi
+
+  if moveit_process_exists; then
+    echo "检测到未就绪的 MoveIt 进程，准备重启"
+    pkill -TERM -f "${MOVEIT_PATTERN}" >/dev/null 2>&1 || true
+    sleep 2
+    pkill -KILL -f "${MOVEIT_PATTERN}" >/dev/null 2>&1 || true
+  fi
+
+  if ! ros2 pkg prefix "${MASSAGE_MOVEIT_CONFIG_PACKAGE}" >/dev/null 2>&1; then
+    echo "找不到 MoveIt 配置包: ${MASSAGE_MOVEIT_CONFIG_PACKAGE}" >&2
+    echo "请先安装并构建 FAIRINO MoveIt 配置。" >&2
+    return 1
+  fi
+
+  echo "启动 MoveIt IK 服务: ${MASSAGE_MOVEIT_CONFIG_PACKAGE}"
+  : > "${MOVEIT_LOG}"
+  setsid nohup ros2 launch "${MASSAGE_MOVEIT_CONFIG_PACKAGE}" demo.launch.py use_rviz:=false allow_trajectory_execution:=false \
+    >"${MOVEIT_LOG}" 2>&1 < /dev/null &
+  local moveit_pid=$!
+  echo "${moveit_pid}" > "${MOVEIT_PID_FILE}"
+
+  for _ in $(seq 1 "${MASSAGE_MOVEIT_WAIT_RETRIES:-30}"); do
+    if ! kill -0 "${moveit_pid}" >/dev/null 2>&1; then
+      echo "MoveIt 启动失败，日志如下："
+      tail -n 100 "${MOVEIT_LOG}" || true
+      return 1
+    fi
+    if moveit_ready; then
+      echo "MoveIt IK 服务已就绪"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "等待 MoveIt IK 服务超时，日志如下："
+  tail -n 100 "${MOVEIT_LOG}" || true
+  return 1
+}
+
+start_stack() {
+  setup_ros_env
+  reset_ros2_discovery
+
+  if server_process_exists; then
+    echo "检测到已有 FAIRINO ROS2 控制服务，先执行探针"
+    if probe_service; then
+      echo "服务已运行并通过探针。"
+      return 0
+    fi
+    echo "已有服务未通过探针，准备重启"
+    stop_processes
+    setup_ros_env
+  elif service_ready; then
+    echo "检测到残留 ROS2 服务发现信息，准备重新拉起控制服务"
+    reset_ros2_discovery
+  fi
+
+  start_server
+  if ! probe_with_retries; then
+    echo "ROS2 控制服务探针失败，日志如下："
+    tail -n 100 "${ROS2_LOG}" || true
+    return 1
+  fi
+
+  echo "按摩后台服务已启动。"
+  echo "日志: ${ROS2_LOG}"
+
+  start_moveit
+  echo "MoveIt 日志: ${MOVEIT_LOG}"
+}
+
+run_ft() {
+  if pgrep -f "${RUNNER_PATTERN}" >/dev/null 2>&1; then
+    echo "检测到 ft.py 或 run_lasttime_ros2.sh 已在运行，拒绝重复启动。" >&2
+    return 1
+  fi
+
+  echo "开始执行 ft.py 按摩流程..."
+  cd "${FAIRINO_DIR}"
+  export LASTTIME_ROS2_SCRIPT="ft.py"
+  export LASTTIME_ROS2_REUSE_SERVER="1"
+  exec ./run_lasttime_ros2.sh "$@"
+}
+
+main() {
+  local cmd="${1:-help}"
+  if [[ "$#" -gt 0 ]]; then
+    shift
+  fi
+  case "${cmd}" in
+    start)
+      start_stack
+      if home_pose_enabled "${MASSAGE_HOME_ON_START}"; then
+        move_to_recorded_home "start 回位"
+      fi
+      run_ft "$@"
+      ;;
+    restart)
+      setup_ros_env
+      stop_processes
+      start_stack
+      ;;
+    stop)
+      setup_ros_env
+      stop_processes
+      ;;
+    clean)
+      clean_residual_processes
+      ;;
+    record-home)
+      setup_ros_env
+      if ! service_ready; then
+        start_server
+        if ! probe_with_retries; then
+          echo "ROS2 控制服务探针失败，无法记录回位姿态。" >&2
+          exit 1
+        fi
+      fi
+      record_home_pose
+      ;;
+    home)
+      setup_ros_env
+      if ! service_ready; then
+        start_server
+        if ! probe_with_retries; then
+          echo "ROS2 控制服务探针失败，无法执行回位。" >&2
+          exit 1
+        fi
+      fi
+      move_to_recorded_home "手动回位"
+      ;;
+    help|-h|--help)
+      usage
+      ;;
+    *)
+      echo "未知命令: ${cmd}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

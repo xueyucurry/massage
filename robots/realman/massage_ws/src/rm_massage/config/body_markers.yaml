@@ -1,0 +1,11 @@
+aruco:
+  dictionary: "DICT_4X4_50"
+  marker_size_m: 0.050
+  marker_id: null
+
+  T_body_marker:
+    translation: [0.000, 0.000, 0.080]
+    quaternion: [0.0, 0.0, 0.0, 1.0]
+
+filter:
+  alpha: 0.35

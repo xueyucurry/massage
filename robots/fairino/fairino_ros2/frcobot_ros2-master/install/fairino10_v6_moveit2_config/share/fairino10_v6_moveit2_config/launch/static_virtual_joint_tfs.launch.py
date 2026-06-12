@@ -1,0 +1,1 @@
+/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master/fairino10_v6_moveit2_config/launch/static_virtual_joint_tfs.launch.py
