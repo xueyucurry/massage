@@ -37,6 +37,17 @@ api.load_trajectory("/path/to/back_trajectory_YYYYMMDD_HHMMSS.json")
 api.execute_actions(["shun_jin"])
 ```
 
+可暂停/恢复执行由上层会话管理器传入 `control` 对象实现。普通脚本不传 `control` 时，行为与原来一致。
+
+```python
+api.execute_actions(
+    ["dian_jin", "fen_jin", "shun_jin"],
+    control=my_control,
+    start_stage="point_actions",
+    start_point_index=0,
+)
+```
+
 ## 命令行调用
 
 检测并保存轨迹：
@@ -89,10 +100,31 @@ python3 ft_agent_api.py execute \
 | `detect_meridian(save=True, display=False)` | 自动等待检测稳定，生成可执行轨迹，可保存 JSON |
 | `load_trajectory(path)` | 从已保存 JSON 恢复轨迹 |
 | `init_robot()` | 初始化 ROS 2 机械臂连接 |
-| `execute_actions(actions)` | 执行指定动作集合；会自动初始化机械臂 |
+| `execute_actions(actions, control=None, start_stage=None, start_point_index=0)` | 执行指定动作集合；会自动初始化机械臂；可由会话管理器传入暂停/恢复控制 |
 | `run_workflow(...)` | 检测、保存轨迹、执行动作的一体化流程 |
 | `close_vision()` | 关闭 RealSense pipeline |
 | `close_robot()` | 关闭力控并释放机器人对象 |
+
+## 语音智能体接入
+
+`py-xiaozhi` 中新增了 FAIRINO 轨迹按摩 MCP 工具：
+
+| 工具 | 语音意图示例 | 说明 |
+| --- | --- | --- |
+| `self.fairino_massage.detect` | “进行膀胱经检测”、“检测大腿内侧” | 调用检测并保存轨迹 |
+| `self.fairino_massage.start` | “开始按摩”、“只做顺筋” | 使用当前轨迹后台执行动作 |
+| `self.fairino_massage.pause` | “暂停按摩” | 在最近安全检查点暂停并保存状态 |
+| `self.fairino_massage.resume` | “继续按摩” | 从上次暂停点继续 |
+| `self.fairino_massage.stop` | “停止按摩” | 请求停止当前按摩任务 |
+| `self.fairino_massage.status` | “现在按摩到哪里了” | 查询当前会话和进度 |
+
+会话状态默认保存到：
+
+```text
+/home/franka/massage/robots/fairino/ft_agent_state/current_session.json
+```
+
+状态中记录 `target`、`trajectory_path`、`actions`、`stage`、`current_point_index`、`resume_stage`、`resume_point_index`、`robot_tcp_pose`、`robot_joints_deg` 等字段。暂停采用软暂停策略：点筋/分筋会在点位动作之间暂停；力控顺筋会先回到悬空位，再保存暂停点。紧急情况仍应使用现场物理急停。
 
 ## 返回格式
 

@@ -11,6 +11,11 @@ RUNTIME_LIB_DIR="${FAIRINO_DIR}/.ros2_runtime_libs"
 MOVEIT_LOG="${FAIRINO_DIR}/.moveit.log"
 MOVEIT_PID_FILE="${FAIRINO_DIR}/.moveit.pid"
 HOME_POSE_FILE="${FAIRINO_DIR}/massage_home_pose.json"
+XIAOZHI_DIR="${ROOT_DIR}/py-xiaozhi"
+XIAOZHI_PYTHON="${XIAOZHI_PYTHON:-${XIAOZHI_DIR}/.venv-linux/bin/python}"
+FT_AGENT_STATE_DIR="${FAIRINO_DIR}/ft_agent_state"
+FT_AGENT_STATE_FILE="${FT_AGENT_STATE_DIR}/current_session.json"
+FT_AGENT_CONTROL_FILE="${FT_AGENT_STATE_DIR}/current_control.json"
 
 export ROBOT_IP="${ROBOT_IP:-192.168.58.2}"
 export ROS_LOCALHOST_ONLY="${LASTTIME_ROS_LOCALHOST_ONLY:-1}"
@@ -26,11 +31,14 @@ export MASSAGE_HOME_MOVE_VEL="${MASSAGE_HOME_MOVE_VEL:-20}"
 export MASSAGE_HOME_SAFE_Z_MM="${MASSAGE_HOME_SAFE_Z_MM:-300}"
 export MASSAGE_HOME_ON_START="${MASSAGE_HOME_ON_START:-1}"
 export MASSAGE_HOME_ON_STOP="${MASSAGE_HOME_ON_STOP:-1}"
+export MASSAGE_HOME_ON_GUI_START="${MASSAGE_HOME_ON_GUI_START:-1}"
 
 SERVICE_REGEX="/?${FAIRINO_REMOTE_SERVICE}"
 SERVER_PATTERN='(^|/)ros2_cmd_server([[:space:]]|$)|ros2 run fairino_hardware ros2_cmd_server'
 RUNNER_PATTERN='(^|/)run_lasttime_ros2\.sh([[:space:]]|$)|/home/franka/massage/env/\.venv/bin/python[[:space:]]+ft\.py|(^|/)python[0-9.]*[[:space:]]+ft\.py'
 MOVEIT_PATTERN='ros2 launch .*_moveit2_config .*demo\.launch\.py|/move_group|(^|/)move_group([[:space:]]|$)|ros2_control_node'
+XIAOZHI_GUI_PATTERN='(^|/)python[0-9.]*([[:space:]][^[:space:]]*)?[[:space:]]+main\.py[[:space:]]+--mode[[:space:]]+gui'
+FT_AGENT_PATTERN='(^|/)ft_agent_process\.py([[:space:]]|$)|(^|/)run_ft_agent_process_(env|ros2)\.sh([[:space:]]|$)'
 
 usage() {
   cat <<EOF
@@ -39,6 +47,7 @@ Usage:
   ./massage restart    Stop then start FAIRINO ROS2 and MoveIt services
   ./massage stop       Stop FAIRINO ROS2, MoveIt, and residual ft.py runner
   ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
+  ./massage gui        Start py-xiaozhi GUI
   ./massage record-home Record current TCP pose as start/stop return pose
   ./massage home        Move to recorded start/stop return pose
   ./massage help       Show this help
@@ -46,6 +55,7 @@ Usage:
 Notes:
   start runs ft.py in the foreground after ROS2 probe passes.
   start and stop return to the recorded pose when MASSAGE_HOME_ON_START/STOP is enabled.
+  gui returns to the recorded pose before opening py-xiaozhi when MASSAGE_HOME_ON_GUI_START is enabled.
   stop is not a physical emergency stop. Use the robot emergency stop button when needed.
 
 Environment:
@@ -60,6 +70,9 @@ Environment:
   MASSAGE_HOME_POSE_FILE=${MASSAGE_HOME_POSE_FILE}
   MASSAGE_HOME_MOVE_VEL=${MASSAGE_HOME_MOVE_VEL}
   MASSAGE_HOME_SAFE_Z_MM=${MASSAGE_HOME_SAFE_Z_MM}
+  MASSAGE_HOME_ON_GUI_START=${MASSAGE_HOME_ON_GUI_START}
+  XIAOZHI_PYTHON=${XIAOZHI_PYTHON}
+  XIAOZHI_GUI_CLEAN_ON_START=${XIAOZHI_GUI_CLEAN_ON_START:-1}
 EOF
 }
 
@@ -446,6 +459,15 @@ stop_runners() {
   pkill -KILL -f "${RUNNER_PATTERN}" >/dev/null 2>&1 || true
 }
 
+stop_agent_processes() {
+  if pgrep -f "${FT_AGENT_PATTERN}" >/dev/null 2>&1; then
+    echo "停止 FAIRINO 语音按摩子进程..."
+    pkill -TERM -f "${FT_AGENT_PATTERN}" >/dev/null 2>&1 || true
+    sleep 1
+    pkill -KILL -f "${FT_AGENT_PATTERN}" >/dev/null 2>&1 || true
+  fi
+}
+
 stop_background_services() {
   echo "停止 FAIRINO ROS2 / MoveIt 后台服务..."
   pkill -TERM -f "${MOVEIT_PATTERN}" >/dev/null 2>&1 || true
@@ -520,6 +542,8 @@ clean_residual_processes() {
 
 stop_processes() {
   echo "停止按摩相关进程..."
+  reset_xiaozhi_agent_state "massage stop" "已执行 ./massage stop，按摩任务已停止" "1" || true
+  stop_agent_processes
   stop_runners
   if home_pose_enabled "${MASSAGE_HOME_ON_STOP}" && service_ready; then
     if ! move_to_recorded_home "stop 回位"; then
@@ -652,6 +676,132 @@ run_ft() {
   exec ./run_lasttime_ros2.sh "$@"
 }
 
+reset_xiaozhi_agent_state() {
+  local reset_source="${1:-massage gui startup cleanup}"
+  local reset_message="${2:-小智 GUI 启动时已清理上一次未结束任务}"
+  local force_reset="${3:-0}"
+  local python_bin="python3"
+  if [[ -x "${XIAOZHI_PYTHON}" ]]; then
+    python_bin="${XIAOZHI_PYTHON}"
+  fi
+
+  FT_AGENT_STATE_FILE="${FT_AGENT_STATE_FILE}" \
+  FT_AGENT_CONTROL_FILE="${FT_AGENT_CONTROL_FILE}" \
+  FT_AGENT_RESET_SOURCE="${reset_source}" \
+  FT_AGENT_RESET_MESSAGE="${reset_message}" \
+  FT_AGENT_FORCE_RESET="${force_reset}" \
+  "${python_bin}" - <<'PY'
+import json
+import os
+import time
+from pathlib import Path
+
+state_path = Path(os.environ["FT_AGENT_STATE_FILE"])
+control_path = Path(os.environ["FT_AGENT_CONTROL_FILE"])
+reset_source = os.environ.get("FT_AGENT_RESET_SOURCE", "massage gui startup cleanup")
+reset_message = os.environ.get("FT_AGENT_RESET_MESSAGE", "小智 GUI 启动时已清理上一次未结束任务")
+force_reset = os.environ.get("FT_AGENT_FORCE_RESET", "0").strip().lower() in {"1", "true", "yes", "on"}
+now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+def read_json(path):
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(path)
+
+state = read_json(state_path)
+session_id = state.get("session_id")
+write_json(
+    control_path,
+    {
+        "session_id": session_id,
+        "request": "stop",
+        "updated_at": now,
+        "source": reset_source,
+    },
+)
+
+if state:
+    stale_statuses = {"detecting", "running", "pausing", "paused", "stopping"}
+    if force_reset or state.get("status") in stale_statuses:
+        state["status"] = "stopped"
+        state["message"] = reset_message
+        state["current_action"] = None
+        state["stage"] = None
+        state["resume_stage"] = None
+        state["resume_point_index"] = 0
+        state["resume_action"] = None
+        state["resume_repeat_index"] = 0
+        state["resume_step_index"] = 0
+        state["worker_pid"] = None
+        state["updated_at"] = now
+        write_json(state_path, state)
+PY
+}
+
+cleanup_xiaozhi_gui_startup() {
+  if [[ "${XIAOZHI_GUI_CLEAN_ON_START:-1}" != "1" && "${XIAOZHI_GUI_CLEAN_ON_START:-1}" != "true" && "${XIAOZHI_GUI_CLEAN_ON_START:-1}" != "yes" && "${XIAOZHI_GUI_CLEAN_ON_START:-1}" != "on" ]]; then
+    echo "小智 GUI 启动清理已关闭。"
+    return 0
+  fi
+
+  echo "清理上一次小智 GUI 和 FAIRINO 语音按摩任务..."
+  reset_xiaozhi_agent_state || true
+
+  if pgrep -f "${XIAOZHI_GUI_PATTERN}" >/dev/null 2>&1; then
+    echo "发现旧小智 GUI 进程，正在结束..."
+    pkill -TERM -f "${XIAOZHI_GUI_PATTERN}" >/dev/null 2>&1 || true
+    sleep 1
+    pkill -KILL -f "${XIAOZHI_GUI_PATTERN}" >/dev/null 2>&1 || true
+  fi
+
+  if pgrep -f "${FT_AGENT_PATTERN}" >/dev/null 2>&1; then
+    echo "发现旧 FAIRINO 语音按摩子进程，正在结束..."
+    pkill -TERM -f "${FT_AGENT_PATTERN}" >/dev/null 2>&1 || true
+    sleep 1
+    pkill -KILL -f "${FT_AGENT_PATTERN}" >/dev/null 2>&1 || true
+  fi
+
+  echo "小智 GUI 启动清理完成。"
+}
+
+run_xiaozhi_gui() {
+  if [[ ! -d "${XIAOZHI_DIR}" ]]; then
+    echo "找不到 py-xiaozhi 目录: ${XIAOZHI_DIR}" >&2
+    return 1
+  fi
+  if [[ ! -x "${XIAOZHI_PYTHON}" ]]; then
+    echo "找不到小智 Python 环境: ${XIAOZHI_PYTHON}" >&2
+    return 1
+  fi
+  if [[ ! -f "${XIAOZHI_DIR}/main.py" ]]; then
+    echo "找不到小智入口: ${XIAOZHI_DIR}/main.py" >&2
+    return 1
+  fi
+
+  cleanup_xiaozhi_gui_startup
+  if home_pose_enabled "${MASSAGE_HOME_ON_GUI_START}"; then
+    start_stack
+    if ! move_to_recorded_home "gui 启动回位"; then
+      echo "gui 启动回位失败，停止启动小智 GUI。" >&2
+      return 1
+    fi
+  fi
+
+  cd "${XIAOZHI_DIR}"
+  exec "${XIAOZHI_PYTHON}" main.py --mode gui "$@"
+}
+
 main() {
   local cmd="${1:-help}"
   if [[ "$#" -gt 0 ]]; then
@@ -676,6 +826,9 @@ main() {
       ;;
     clean)
       clean_residual_processes
+      ;;
+    gui)
+      run_xiaozhi_gui "$@"
       ;;
     record-home)
       setup_ros_env

@@ -7,6 +7,8 @@ __pycache__/
 .venv/
 .venv-noetic/
 env/.venv/
+py-xiaozhi/.venv/
+py-xiaozhi/.venv-linux/
 
 # Local secrets/config. Keep checked-in templates visible.
 *.env
@@ -15,10 +17,12 @@ env/.venv/
 
 # Logs and generated runtime state
 *.log
+*.pid
 .ros2_cmd_server.log
 .ros2_runtime_libs/
 robots/fairino/.ros2_cmd_server.log
 robots/fairino/.ros2_runtime_libs/
+robots/fairino/ft_agent_state/
 robots/fairino/ft_locked_trajectory_output/
 robots/fairino/robot_meridian_output/
 robots/fairino/rtmpose_hip_knee_output/
@@ -58,3 +62,20 @@ _meta/__pycache__/
 robots/fairino/fairino-python-sdk-master (1)/
 robots/fairino/fairino_ros2/fairino_hardware.backup_*/
 robots/realman/rm_demo_pkgs/
+py-xiaozhi/.git/
+py-xiaozhi/.git-local-backup/
+py-xiaozhi/.local-debs/
+py-xiaozhi/.local-libs/
+py-xiaozhi/.unifypy/
+py-xiaozhi/.vscode/
+py-xiaozhi/build/
+py-xiaozhi/cache/
+py-xiaozhi/config/
+py-xiaozhi/dist/
+py-xiaozhi/documents/dist/
+py-xiaozhi/documents/node_modules/
+py-xiaozhi/logs/
+py-xiaozhi/models/
+py-xiaozhi/src/user_functions/fairino/build/
+py-xiaozhi/src/user_functions/fairino/dist/
+py-xiaozhi/src/**/__pycache__/
