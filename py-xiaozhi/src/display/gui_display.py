@@ -4,6 +4,7 @@ GUI 显示模块 - 使用 QML 实现.
 """
 
 import asyncio
+import json
 import os
 import signal
 from abc import ABCMeta
@@ -56,6 +57,9 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         self._running = True
         self.current_status = ""
         self.is_connected = True
+        self._massage_state_timer = None
+        self._massage_state_path = self._resolve_massage_state_path()
+        self._last_massage_state_payload = None
 
         # 窗口拖动状态
         self._dragging = False
@@ -112,6 +116,7 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
             self.current_status = status
         if connected_changed:
             self.is_connected = bool(connected)
+            self._refresh_massage_state()
 
         # 更新系统托盘
         if (status_changed or connected_changed) and self.system_tray:
@@ -327,6 +332,7 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         完成启动流程.
         """
         await self.update_emotion("neutral")
+        self._setup_massage_state_monitor()
 
         # 根据配置决定显示模式
         if getattr(self, "_is_fullscreen", False):
@@ -335,6 +341,43 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
             self.root.show()
 
         self._setup_system_tray()
+
+    def _resolve_massage_state_path(self) -> Path:
+        """
+        获取 FAIRINO 语音按摩状态文件路径.
+        """
+        configured = os.getenv("FT_AGENT_STATE_FILE")
+        if configured:
+            return Path(configured)
+        return Path(__file__).resolve().parents[3] / "robots" / "fairino" / "ft_agent_state" / "current_session.json"
+
+    def _setup_massage_state_monitor(self):
+        """
+        定时刷新按摩机器人任务状态.
+        """
+        self._refresh_massage_state()
+        self._massage_state_timer = QTimer(self.root)
+        self._massage_state_timer.timeout.connect(self._refresh_massage_state)
+        self._massage_state_timer.start(800)
+
+    def _refresh_massage_state(self):
+        """
+        从 current_session.json 读取最新按摩任务状态.
+        """
+        payload = {}
+        try:
+            if self._massage_state_path.exists():
+                with self._massage_state_path.open("r", encoding="utf-8") as f:
+                    payload = json.load(f)
+        except Exception as e:
+            self.logger.debug(f"读取按摩状态失败: {e}")
+            payload = {}
+
+        payload_key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if payload_key == self._last_massage_state_payload:
+            return
+        self._last_massage_state_payload = payload_key
+        self.display_model.update_massage_state(payload)
 
     # =========================================================================
     # 信号连接

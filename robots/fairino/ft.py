@@ -228,6 +228,13 @@ BACK_LINE_TRIM_TAIL_RATIO = float(
 FORCE_FEN_LATERAL_MM = float(
     os.environ.get("LASTTIME_FORCE_FEN_LATERAL_MM", str(min(abs(FEN_JIN_LATERAL_MM), 12.0)))
 )
+DIAN_JIN_MODE = os.environ.get("FT_DIAN_JIN_MODE", "small_fen").strip().lower()
+DIAN_AS_SMALL_FEN_LATERAL_MM = float(
+    os.environ.get(
+        "FT_DIAN_AS_SMALL_FEN_LATERAL_MM",
+        str(min(abs(FORCE_FEN_LATERAL_MM) * 0.5, 6.0)),
+    )
+)
 FORCE_MAX_DIS_MM = float(os.environ.get("LASTTIME_FORCE_MAX_DIS_MM", "8.0"))
 FORCE_MAX_ANG_DEG = float(os.environ.get("LASTTIME_FORCE_MAX_ANG_DEG", "3.0"))
 FORCE_PID_P = float(os.environ.get("LASTTIME_FORCE_PID_P", "0.003"))
@@ -333,6 +340,8 @@ FORCE_RELEASE_LIMIT_N = float(
     os.environ.get("LASTTIME_FORCE_RELEASE_LIMIT_N", "5.0")
 )
 FORCE_RELEASE_TIMEOUT_S = float(os.environ.get("LASTTIME_FORCE_RELEASE_TIMEOUT_S", "2.0"))
+LIVE_FORCE_TARGET_MIN_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MIN_N", "1.0"))
+LIVE_FORCE_TARGET_MAX_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MAX_N", "80.0"))
 
 MASSAGE_TARGET_ENV = os.environ.get("MASSAGE_TARGET", "").strip().lower()
 THIGH_SIDE = os.environ.get("THIGH_SIDE", "right").strip().lower()
@@ -1377,6 +1386,36 @@ class Ros2ForceController:
             int(is_no_block),
         )
 
+    def update_target_force(self, target_force_n, context="力度调整"):
+        target_force_n = abs(float(target_force_n))
+        self.target_force_n = target_force_n
+        self.config.target_force_z = target_force_n
+        self.config.software_force_limit = max(
+            abs(FORCE_SOFTWARE_NORMAL_LIMIT_N),
+            target_force_n + 30.0,
+        )
+        self.tangential_force_limit = max(
+            abs(FORCE_SOFTWARE_TANGENTIAL_LIMIT_N),
+            self.config.software_force_limit,
+        )
+        self.config.guard_force_limit = max(abs(FORCE_GUARD_LIMIT_N), target_force_n + 10.0)
+
+        if not self.active:
+            return
+
+        target_fz = FORCE_AXIS_SIGN * target_force_n
+        cmd = self._ft_control_cmd(
+            flag=1,
+            select=[0, 0, 1, 0, 0, 0],
+            ft=[0, 0, target_fz, 0, 0, 0],
+            ft_pid=self.config.ft_pid,
+            max_dis=self.config.max_dis,
+            max_ang=self.config.max_ang,
+            is_no_block=1,
+        )
+        self._call_force(cmd, f"{context}: FT_Control目标力更新")
+        print(f"[Force] {context}: 目标力已更新为 {target_force_n:.1f}N")
+
     def _stop_robot_motion(self, context):
         self._call_force(self._cmd("StopMotion"), f"{context}: StopMotion", required=False)
 
@@ -1539,6 +1578,20 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         else:
             self.hover_height_mm = float(BACK_HOVER_HEIGHT_MM)
             self.force_approach_max_offset_mm = float(FORCE_APPROACH_MAX_OFFSET_MM)
+
+    def _current_force_target_n(self):
+        return abs(float(self.force_target_n))
+
+    def set_force_target_n(self, target_force_n, context="力度调整"):
+        target_force_n = abs(float(target_force_n))
+        min_force = min(float(LIVE_FORCE_TARGET_MIN_N), float(LIVE_FORCE_TARGET_MAX_N))
+        max_force = max(float(LIVE_FORCE_TARGET_MIN_N), float(LIVE_FORCE_TARGET_MAX_N))
+        target_force_n = max(min_force, min(max_force, target_force_n))
+        previous = self._current_force_target_n()
+        self.force_target_n = target_force_n
+        if self.force_controller is not None:
+            self.force_controller.update_target_force(target_force_n, context=context)
+        return previous, target_force_n
 
     def init_robot(self):
         print(f"连接机械臂 {ROBOT_IP}...")
@@ -2149,7 +2202,6 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         return True
 
     def _approach_to_target_force(self, frame, context, split_offset_mm=0.0):
-        target_n = abs(float(self.force_target_n))
         offset = -float(self.hover_height_mm)
         max_offset = max(float(self.force_approach_max_offset_mm), float(FORCE_CONTACT_OFFSET_MM))
         step = max(0.05, abs(float(FORCE_APPROACH_STEP_MM)))
@@ -2165,7 +2217,8 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
         print(
             f"[Force] {context}: 从悬空位沿法向贴近 "
-            f"offset {offset:+.1f}mm -> {max_offset:+.1f}mm, target={target_n:.1f}N"
+            f"offset {offset:+.1f}mm -> {max_offset:+.1f}mm, "
+            f"target={self._current_force_target_n():.1f}N"
         )
         precontact_clearance = max(0.0, float(FORCE_APPROACH_PRECONTACT_CLEARANCE_MM))
         if precontact_clearance > 0.0:
@@ -2199,12 +2252,13 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     time.sleep(max(0.03, float(FORCE_APPROACH_SETTLE_S)))
 
         while True:
+            target_n = self._current_force_target_n()
             force_n, data = self._read_force_axis(context)
             now = time.time()
             if now - last_print > 0.4:
                 print(
                     f"[Force] {context}: offset={offset:+.1f}mm "
-                    f"Fz={data[2]:.2f}N press={force_n:.2f}N"
+                    f"Fz={data[2]:.2f}N press={force_n:.2f}N target={target_n:.1f}N"
                 )
                 last_print = now
 
@@ -2245,7 +2299,6 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             time.sleep(settle_s)
 
     def _hold_target_force(self, frame, split_offset_mm, start_offset_mm, seconds, context):
-        target_n = abs(float(self.force_target_n))
         offset = float(start_offset_mm)
         max_offset = max(float(self.force_approach_max_offset_mm), float(FORCE_CONTACT_OFFSET_MM))
         min_offset = -float(self.hover_height_mm)
@@ -2253,6 +2306,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         last_print = 0.0
 
         while time.time() < deadline:
+            target_n = self._current_force_target_n()
             force_n, data = self._read_force_axis(context)
             err_n = target_n - force_n
             if abs(err_n) > FORCE_TARGET_TOL_N:
@@ -2269,7 +2323,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             if now - last_print > 0.4:
                 print(
                     f"[Force] {context}: offset={offset:+.1f}mm "
-                    f"Fz={data[2]:.2f}N press={force_n:.2f}N"
+                    f"Fz={data[2]:.2f}N press={force_n:.2f}N target={target_n:.1f}N"
                 )
                 last_print = now
             time.sleep(self.force_controller._monitor_period)
@@ -3324,33 +3378,98 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             frame,
             -(self.hover_height_mm - DIAN_JIN_DEPTH_MM),
         )
+        use_small_fen = DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}
+        small_fen_lateral_mm = abs(float(DIAN_AS_SMALL_FEN_LATERAL_MM))
 
         for repeat_idx in range(DIAN_JIN_REPEAT_COUNT):
             round_text = f"{repeat_idx + 1}/{DIAN_JIN_REPEAT_COUNT}"
-            self.update_preview_status(f"点筋 {round_text}", frame.get("index"))
+            action_label = "点筋小幅分筋" if use_small_fen else "点筋"
+            self.update_preview_status(f"{action_label} {round_text}", frame.get("index"))
 
             if LASTTIME_ROS2_FORCE:
                 ok = False
                 try:
                     if not self._move_to_hover_for_force(frame, f"点筋悬空位 {round_text}"):
                         return False
-                    offset, reached = self._approach_to_target_force(frame, f"点筋 {round_text}")
+                    offset, reached = self._approach_to_target_force(frame, f"{action_label}中心 {round_text}")
                     if not reached:
                         return False
-                    offset, ok = self._hold_target_force(
-                        frame,
-                        0.0,
-                        offset,
-                        FORCE_DIAN_DWELL_S,
-                        f"点筋保压 {round_text}",
-                    )
+                    if use_small_fen:
+                        offset, ok = self._hold_target_force(
+                            frame,
+                            0.0,
+                            offset,
+                            FORCE_FEN_DWELL_S,
+                            f"{action_label}中心保压 {round_text}",
+                        )
+                        if not ok:
+                            return False
+                        for label, split_offset in (
+                            (f"{action_label}偏移+ {round_text}", small_fen_lateral_mm),
+                            (f"{action_label}偏移- {round_text}", -small_fen_lateral_mm),
+                            (f"{action_label}回中心 {round_text}", 0.0),
+                        ):
+                            pose = self._pose_from_frame_offset(frame, offset, split_offset)
+                            if not self._move_force_pose_checked(pose, label):
+                                return False
+                            offset, ok = self._hold_target_force(
+                                frame,
+                                split_offset,
+                                offset,
+                                FORCE_FEN_DWELL_S,
+                                f"{label}保压",
+                            )
+                            if not ok:
+                                return False
+                    else:
+                        offset, ok = self._hold_target_force(
+                            frame,
+                            0.0,
+                            offset,
+                            FORCE_DIAN_DWELL_S,
+                            f"点筋保压 {round_text}",
+                        )
                 except Exception as exc:
-                    print(f"    警告：点筋{round_text}力控失败 ({exc})")
+                    print(f"    警告：{action_label}{round_text}力控失败 ({exc})")
                     return False
                 finally:
                     if not self._retract_to_hover(frame, f"点筋结束回悬空位 {round_text}"):
                         ok = False
                 if not ok:
+                    return False
+                continue
+
+            if use_small_fen:
+                for label, split_offset in (
+                    (f"点筋小幅分筋偏移+ {round_text}", small_fen_lateral_mm),
+                    (f"点筋小幅分筋偏移- {round_text}", -small_fen_lateral_mm),
+                    (f"点筋小幅分筋回中心 {round_text}", 0.0),
+                ):
+                    pose = self._pose_from_frame_offset(
+                        frame,
+                        -(self.hover_height_mm - DIAN_JIN_DEPTH_MM),
+                        split_offset_mm=split_offset,
+                    )
+                    ret = self.robot.MoveCart(
+                        desc_pos=pose,
+                        tool=ROS2_TOOL,
+                        user=ROS2_USER,
+                        vel=MOVE_VEL_SLOW,
+                        blendT=BLEND_BLOCKING,
+                    )
+                    if ret != 0:
+                        print(f"    警告：{label}失败 (err={ret})")
+                        return False
+                    time.sleep(0.2)
+                ret = self.robot.MoveCart(
+                    desc_pos=hover_pose,
+                    tool=ROS2_TOOL,
+                    user=ROS2_USER,
+                    vel=MOVE_VEL_SLOW,
+                    blendT=BLEND_BLOCKING,
+                )
+                if ret != 0:
+                    print(f"    警告：点筋小幅分筋{round_text}回到悬空位失败 (err={ret})")
                     return False
                 continue
 
@@ -3607,7 +3726,8 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             if not self._move_to_work_pose(first_pose, "移动到起始位置", TRANSIT_MOVE_VEL_FAST):
                 return False
 
-            print("\n执行点筋+分筋动作...")
+            point_action_text = "点筋小幅分筋" if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"} else "点筋"
+            print(f"\n执行{point_action_text}+分筋动作...")
             point_failures = []
             shun_candidate_frames = []
             for i, frame in enumerate(self.massage_frames):
@@ -3623,10 +3743,10 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     continue
                 shun_candidate_frames.append(frame)
 
-                print("  点筋...")
+                print(f"  {point_action_text}...")
                 if not self.execute_dian_jin(frame):
-                    point_failures.append((point_no, "点筋"))
-                    print(f"    警告：点{point_no}点筋失败，跳过该点后续分筋")
+                    point_failures.append((point_no, point_action_text))
+                    print(f"    警告：点{point_no}{point_action_text}失败，跳过该点后续分筋")
                     if not FT_CONTINUE_ON_POINT_ERROR:
                         return False
                     continue
@@ -3641,11 +3761,11 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
             if point_failures:
                 summary = ", ".join(f"点{point}:{stage}" for point, stage in point_failures)
-                print(f"\n[容错] 点筋/分筋阶段跳过: {summary}")
+                print(f"\n[容错] {point_action_text}/分筋阶段跳过: {summary}")
 
             shun_frames = shun_candidate_frames or list(self.massage_frames)
             if not shun_candidate_frames:
-                print("[容错] 没有点筋/分筋阶段确认可达的悬空点，顺筋将尝试原始轨迹")
+                print(f"[容错] 没有{point_action_text}/分筋阶段确认可达的悬空点，顺筋将尝试原始轨迹")
 
             print("\n回到起点...")
             shun_first_frame = shun_frames[0]
@@ -3719,7 +3839,10 @@ def main():
     print(f"  机械臂IP: {ROBOT_IP}")
     print(f"  悬空高度: {selected_hover_mm}mm")
     print(f"  工具端补偿: 法兰/传感器中心到按摩头={TOOL_TIP_LENGTH_MM:.1f}mm")
-    print(f"  点筋深度: {DIAN_JIN_DEPTH_MM}mm")
+    if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}:
+        print(f"  点筋动作: 小幅分筋替代，偏移={DIAN_AS_SMALL_FEN_LATERAL_MM:.1f}mm")
+    else:
+        print(f"  点筋深度: {DIAN_JIN_DEPTH_MM}mm")
     print(f"  点筋次数: {DIAN_JIN_REPEAT_COUNT}次/点")
     print(f"  分筋偏移: {FEN_JIN_LATERAL_MM}mm")
     print(f"  分筋次数: {FEN_JIN_REPEAT_COUNT}轮/点")

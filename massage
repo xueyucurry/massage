@@ -13,6 +13,9 @@ MOVEIT_PID_FILE="${FAIRINO_DIR}/.moveit.pid"
 HOME_POSE_FILE="${FAIRINO_DIR}/massage_home_pose.json"
 XIAOZHI_DIR="${ROOT_DIR}/py-xiaozhi"
 XIAOZHI_PYTHON="${XIAOZHI_PYTHON:-${XIAOZHI_DIR}/.venv-linux/bin/python}"
+CALIBRATION_DIR="${ROOT_DIR}/shared/calibration"
+CALIBRATION_SCRIPT="${CALIBRATION_DIR}/calibrate_camera_to_robot_aruco.py"
+CALIBRATION_PYTHON="${CALIBRATION_PYTHON:-${ROOT_DIR}/env/.venv/bin/python}"
 FT_AGENT_STATE_DIR="${FAIRINO_DIR}/ft_agent_state"
 FT_AGENT_STATE_FILE="${FT_AGENT_STATE_DIR}/current_session.json"
 FT_AGENT_CONTROL_FILE="${FT_AGENT_STATE_DIR}/current_control.json"
@@ -48,6 +51,7 @@ Usage:
   ./massage stop       Stop FAIRINO ROS2, MoveIt, and residual ft.py runner
   ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
   ./massage gui        Start py-xiaozhi GUI
+  ./massage calibrate  Start RealSense + ArUco camera-to-robot calibration
   ./massage record-home Record current TCP pose as start/stop return pose
   ./massage home        Move to recorded start/stop return pose
   ./massage help       Show this help
@@ -72,6 +76,7 @@ Environment:
   MASSAGE_HOME_SAFE_Z_MM=${MASSAGE_HOME_SAFE_Z_MM}
   MASSAGE_HOME_ON_GUI_START=${MASSAGE_HOME_ON_GUI_START}
   XIAOZHI_PYTHON=${XIAOZHI_PYTHON}
+  CALIBRATION_PYTHON=${CALIBRATION_PYTHON}
   XIAOZHI_GUI_CLEAN_ON_START=${XIAOZHI_GUI_CLEAN_ON_START:-1}
 EOF
 }
@@ -542,7 +547,7 @@ clean_residual_processes() {
 
 stop_processes() {
   echo "停止按摩相关进程..."
-  reset_xiaozhi_agent_state "massage stop" "已执行 ./massage stop，按摩任务已停止" "1" || true
+  reset_xiaozhi_agent_state "massage stop" "已执行 ./massage stop，按摩任务已停止" "1" "stopped" || true
   stop_agent_processes
   stop_runners
   if home_pose_enabled "${MASSAGE_HOME_ON_STOP}" && service_ready; then
@@ -678,8 +683,9 @@ run_ft() {
 
 reset_xiaozhi_agent_state() {
   local reset_source="${1:-massage gui startup cleanup}"
-  local reset_message="${2:-小智 GUI 启动时已清理上一次未结束任务}"
+  local reset_message="${2:-就绪，等待语音指令}"
   local force_reset="${3:-0}"
+  local reset_status="${4:-idle}"
   local python_bin="python3"
   if [[ -x "${XIAOZHI_PYTHON}" ]]; then
     python_bin="${XIAOZHI_PYTHON}"
@@ -690,6 +696,7 @@ reset_xiaozhi_agent_state() {
   FT_AGENT_RESET_SOURCE="${reset_source}" \
   FT_AGENT_RESET_MESSAGE="${reset_message}" \
   FT_AGENT_FORCE_RESET="${force_reset}" \
+  FT_AGENT_RESET_STATUS="${reset_status}" \
   "${python_bin}" - <<'PY'
 import json
 import os
@@ -699,8 +706,13 @@ from pathlib import Path
 state_path = Path(os.environ["FT_AGENT_STATE_FILE"])
 control_path = Path(os.environ["FT_AGENT_CONTROL_FILE"])
 reset_source = os.environ.get("FT_AGENT_RESET_SOURCE", "massage gui startup cleanup")
-reset_message = os.environ.get("FT_AGENT_RESET_MESSAGE", "小智 GUI 启动时已清理上一次未结束任务")
+reset_message = os.environ.get("FT_AGENT_RESET_MESSAGE", "就绪，等待语音指令")
 force_reset = os.environ.get("FT_AGENT_FORCE_RESET", "0").strip().lower() in {"1", "true", "yes", "on"}
+reset_status = os.environ.get("FT_AGENT_RESET_STATUS", "idle").strip().lower() or "idle"
+if reset_status == "ready":
+    reset_status = "idle"
+if reset_status not in {"idle", "stopped"}:
+    reset_status = "idle"
 now = time.strftime("%Y-%m-%d %H:%M:%S")
 
 def read_json(path):
@@ -731,19 +743,33 @@ write_json(
     },
 )
 
-if state:
-    stale_statuses = {"detecting", "running", "pausing", "paused", "stopping"}
-    if force_reset or state.get("status") in stale_statuses:
-        state["status"] = "stopped"
+stale_statuses = {"detecting", "running", "pausing", "paused", "stopping"}
+if state or reset_status == "idle":
+    if not state:
+        state = {}
+    should_reset = force_reset or reset_status == "idle" or state.get("status") in stale_statuses
+    if should_reset:
+        state["status"] = reset_status
         state["message"] = reset_message
+        if reset_status == "idle":
+            state["session_id"] = None
+            state["target"] = None
+            state["target_label"] = None
+            state["trajectory_path"] = None
+            state["point_count"] = 0
+            state["actions"] = []
         state["current_action"] = None
         state["stage"] = None
+        state["current_point_index"] = 0
+        state["current_repeat_index"] = 0
+        state["current_step_index"] = 0
         state["resume_stage"] = None
         state["resume_point_index"] = 0
         state["resume_action"] = None
         state["resume_repeat_index"] = 0
         state["resume_step_index"] = 0
         state["worker_pid"] = None
+        state["worker_alive"] = False
         state["updated_at"] = now
         write_json(state_path, state)
 PY
@@ -802,6 +828,29 @@ run_xiaozhi_gui() {
   exec "${XIAOZHI_PYTHON}" main.py --mode gui "$@"
 }
 
+run_calibration() {
+  if [[ ! -f "${CALIBRATION_SCRIPT}" ]]; then
+    echo "找不到标定程序: ${CALIBRATION_SCRIPT}" >&2
+    return 1
+  fi
+  if [[ ! -x "${CALIBRATION_PYTHON}" ]]; then
+    echo "找不到标定 Python 环境: ${CALIBRATION_PYTHON}" >&2
+    return 1
+  fi
+
+  echo "启动相机到机械臂标定程序..."
+  echo "标定目录: ${CALIBRATION_DIR}"
+  echo "标定程序: ${CALIBRATION_SCRIPT}"
+  echo "Python: ${CALIBRATION_PYTHON}"
+  echo "机器人 IP: ${ROBOT_IP}"
+  echo "标定结果将保存到: ${CALIBRATION_DIR}/camera_to_robot.json"
+
+  cd "${CALIBRATION_DIR}"
+  export PYTHONUNBUFFERED=1
+  export PYTHONPATH="${FAIRINO_DIR}:${ROOT_DIR}/shared/vision:${PYTHONPATH:-}"
+  exec "${CALIBRATION_PYTHON}" "${CALIBRATION_SCRIPT}" "$@"
+}
+
 main() {
   local cmd="${1:-help}"
   if [[ "$#" -gt 0 ]]; then
@@ -829,6 +878,9 @@ main() {
       ;;
     gui)
       run_xiaozhi_gui "$@"
+      ;;
+    calibrate)
+      run_calibration "$@"
       ;;
     record-home)
       setup_ros_env

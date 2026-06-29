@@ -39,6 +39,10 @@ def _empty_state():
         "resume_step_index": 0,
         "robot_tcp_pose": None,
         "robot_joints_deg": None,
+        "force_target_n": None,
+        "last_force_adjustment": None,
+        "last_force_adjust_seq": None,
+        "pending_force_adjustment": None,
         "message": None,
         "last_result": None,
         "worker_pid": None,
@@ -109,12 +113,73 @@ class FileExecutionControl:
         self.session_id = session_id
         self.state_path = Path(state_path)
         self.control_path = Path(control_path)
+        self._last_force_adjust_seq = None
 
-    def _read_request(self):
+    def _read_control(self):
         control = _read_json(self.control_path, {}) or {}
         if control.get("session_id") not in {None, "", self.session_id}:
-            return "continue"
+            return {}
+        return control
+
+    def _request_from_control(self, control):
         return str(control.get("request") or "continue").strip().lower()
+
+    def _force_adjustment_from_control(self, control, state):
+        adjustment = control.get("force_adjust") if isinstance(control, dict) else None
+        if not isinstance(adjustment, dict):
+            return None
+
+        seq = str(adjustment.get("seq") or adjustment.get("id") or "").strip()
+        if not seq:
+            return None
+        if seq == str(self._last_force_adjust_seq or ""):
+            return None
+        if seq == str(state.get("last_force_adjust_seq") or ""):
+            self._last_force_adjust_seq = seq
+            return None
+
+        try:
+            delta_n = float(adjustment.get("delta_n") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if abs(delta_n) < 1e-9 and adjustment.get("target_force_n") in (None, ""):
+            return None
+
+        force_adjustment = dict(adjustment)
+        force_adjustment["seq"] = seq
+        force_adjustment["delta_n"] = delta_n
+        return force_adjustment
+
+    def force_target_changed(self, force_update, checkpoint=None):
+        force_update = _jsonable(force_update or {})
+        checkpoint = _jsonable(checkpoint or {})
+        seq = force_update.get("seq")
+        if seq:
+            self._last_force_adjust_seq = str(seq)
+        force_target_n = force_update.get("force_target_n")
+        message = None
+        if force_target_n is not None:
+            delta = float(force_update.get("applied_delta_n") or 0.0)
+            direction = "增大" if delta > 0 else "减小" if delta < 0 else "保持"
+            message = f"按摩力度已{direction}到 {float(force_target_n):.1f}N"
+        updates = {
+            "force_target_n": force_target_n,
+            "last_force_adjustment": force_update,
+            "last_force_adjust_seq": seq,
+            "pending_force_adjustment": None,
+            "message": message or checkpoint.get("message"),
+        }
+        if checkpoint:
+            updates.update(
+                stage=checkpoint.get("stage"),
+                current_action=checkpoint.get("current_action"),
+                current_point_index=_int_value(checkpoint.get("current_point_index")),
+                current_repeat_index=_int_value(checkpoint.get("current_repeat_index")),
+                current_step_index=_int_value(checkpoint.get("current_step_index")),
+                robot_tcp_pose=(checkpoint.get("robot_state") or {}).get("tcp_pose"),
+                robot_joints_deg=(checkpoint.get("robot_state") or {}).get("joints_deg"),
+            )
+        _update_state(self.state_path, self.session_id, **updates)
 
     def checkpoint(self, checkpoint):
         checkpoint = _jsonable(checkpoint or {})
@@ -144,10 +209,12 @@ class FileExecutionControl:
             ),
             "robot_tcp_pose": robot_state.get("tcp_pose"),
             "robot_joints_deg": robot_state.get("joints_deg"),
+            "force_target_n": checkpoint.get("force_target_n", state.get("force_target_n")),
             "message": checkpoint.get("message"),
         }
 
-        request = self._read_request()
+        control = self._read_control()
+        request = self._request_from_control(control)
         if request in {"stop", "stopped"}:
             if not checkpoint.get("safe_to_pause", True):
                 updates.update(status="stopping", message="已收到停止请求，先回当前点悬空位")
@@ -166,8 +233,11 @@ class FileExecutionControl:
             _update_state(self.state_path, self.session_id, **updates)
             return "pause_pending"
 
+        force_adjustment = self._force_adjustment_from_control(control, state)
         updates.update(status="running")
         _update_state(self.state_path, self.session_id, **updates)
+        if force_adjustment:
+            return {"request": "continue", "force_adjustment": force_adjustment}
         return "continue"
 
 
@@ -221,6 +291,9 @@ def run_execute(args):
             return _jsonable(result)
 
         trajectory = load_result.get("trajectory") or {}
+        if args.force_target_n is not None:
+            api.demo.set_force_target_n(args.force_target_n, context="会话力度恢复")
+            trajectory["force_target_n"] = float(api.demo.force_target_n)
         _update_state(
             args.state_path,
             args.session_id,
@@ -229,6 +302,7 @@ def run_execute(args):
             target_label=load_result.get("target_label"),
             trajectory_path=args.trajectory_path,
             point_count=trajectory.get("point_count") or 0,
+            force_target_n=trajectory.get("force_target_n"),
             actions=ft_agent_api.normalize_massage_actions(args.actions),
             stage=args.start_stage,
             current_action="start",
@@ -282,7 +356,7 @@ def run_execute(args):
             _update_state(
                 args.state_path,
                 args.session_id,
-                status="completed",
+                status="stopped",
                 stage="completed",
                 current_action="completed",
                 current_point_index=0,
@@ -293,7 +367,7 @@ def run_execute(args):
                 resume_action=None,
                 resume_repeat_index=0,
                 resume_step_index=0,
-                message="按摩动作执行完成",
+                message="按摩动作执行完成，任务已停止",
                 last_result=result,
             )
         else:
@@ -355,6 +429,7 @@ def build_parser():
     execute.add_argument("--state-path", required=True)
     execute.add_argument("--control-path", required=True)
     execute.add_argument("--result-path", required=True)
+    execute.add_argument("--force-target-n", type=float, default=None)
 
     return parser
 

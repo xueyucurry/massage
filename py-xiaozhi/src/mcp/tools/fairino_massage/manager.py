@@ -3,6 +3,7 @@
 from src.utils.logging_config import get_logger
 
 from .tools import (
+    adjust_force,
     detect_meridian,
     get_status,
     pause_massage,
@@ -58,6 +59,24 @@ class FairinoMassageToolsManager:
                     "actions 可取 all 或 dian_jin,fen_jin,shun_jin 的逗号组合；无 trajectory_path 时使用当前会话轨迹。",
                     start_props,
                     start_massage,
+                )
+            )
+
+            adjust_force_props = PropertyList(
+                [
+                    Property("direction", PropertyType.STRING, default_value="stronger"),
+                    Property("delta_n", PropertyType.INTEGER, default_value=0),
+                ]
+            )
+            add_tool(
+                (
+                    "self.fairino_massage.adjust_force",
+                    "【FAIRINO运行中调整力度】用户在按摩已经开始后说“大力一些、加大力度、重一点、用力一点、小力一些、减小力度、轻一点”时必须调用本工具。"
+                    "不要调用 start/pause/resume/status 代替；本工具不会中断按摩，只请求当前执行器在最近控制检查周期调整目标力。"
+                    "direction 可取 stronger/increase 表示增大，softer/decrease 表示减小；默认每次调整 1N。"
+                    "delta_n 可选，正数增大、负数减小；用户只说大力/小力时不要改 delta_n。",
+                    adjust_force_props,
+                    adjust_force,
                 )
             )
 

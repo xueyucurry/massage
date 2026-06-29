@@ -31,15 +31,15 @@ except Exception:
 
 
 # ---------------- 配置 ----------------
-ROBOT_IP = "192.168.58.2"
-OUTPUT_FILE = "camera_to_robot.json"
-REPORT_FILE = "camera_to_robot_aruco_report.json"
-PAIR_LOG_FILE = "camera_robot_aruco_pairs.json"
+ROBOT_IP = os.environ.get("ROBOT_IP", "192.168.58.2")
+OUTPUT_FILE = os.environ.get("CALIB_OUTPUT_FILE", "camera_to_robot.json")
+REPORT_FILE = os.environ.get("CALIB_REPORT_FILE", "camera_to_robot_aruco_report.json")
+PAIR_LOG_FILE = os.environ.get("CALIB_PAIR_LOG_FILE", "camera_robot_aruco_pairs.json")
 
 # ArUco 参数
-ARUCO_DICT_NAME = "DICT_5X5_250"
-ARUCO_ID = 0
-ARUCO_MARKER_SIZE_M = 0.09  # 打印标记边长（米），例如 5cm -> 0.05
+ARUCO_DICT_NAME = os.environ.get("CALIB_ARUCO_DICT", "DICT_5X5_250")
+ARUCO_ID = int(os.environ.get("CALIB_ARUCO_ID", "0"))
+ARUCO_MARKER_SIZE_M = float(os.environ.get("CALIB_ARUCO_MARKER_SIZE_M", "0.09"))  # 打印标记边长（米），例如 5cm -> 0.05
 
 # 法奥位姿单位（通常 mm）
 ROBOT_POS_IN_MM = True

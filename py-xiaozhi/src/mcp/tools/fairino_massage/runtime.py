@@ -26,6 +26,7 @@ DETECT_RUNNER = FAIRINO_DIR / "run_ft_agent_process_env.sh"
 EXECUTE_RUNNER = FAIRINO_DIR / "run_ft_agent_process_ros2.sh"
 MASSAGE_CLI = PROJECT_ROOT / "massage"
 MASSAGE_ACTION_SEQUENCE = ("dian_jin", "fen_jin", "shun_jin")
+FORCE_ADJUST_STEP_N = float(os.environ.get("FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N", "1.0"))
 
 _runtime = None
 
@@ -173,6 +174,42 @@ def _normalize_massage_actions(actions=None) -> List[str]:
     return [action for action in MASSAGE_ACTION_SEQUENCE if action in requested]
 
 
+def _normalize_force_delta(direction: str = "", delta_n: Optional[float] = None) -> float:
+    if delta_n not in (None, "", 0, "0"):
+        return float(delta_n)
+
+    text = str(direction or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in {
+        "",
+        "stronger",
+        "increase",
+        "up",
+        "more",
+        "harder",
+        "heavier",
+        "大力",
+        "大力一些",
+        "加力",
+        "加大",
+        "增大",
+    }:
+        return abs(float(FORCE_ADJUST_STEP_N))
+    if text in {
+        "softer",
+        "decrease",
+        "down",
+        "less",
+        "lighter",
+        "小力",
+        "小力一些",
+        "减力",
+        "减小",
+        "降低",
+    }:
+        return -abs(float(FORCE_ADJUST_STEP_N))
+    raise ValueError("direction 必须是 stronger/increase 或 softer/decrease")
+
+
 def _infer_massage_target_from_trajectory(path: str) -> str:
     with Path(path).open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -242,7 +279,7 @@ def _infer_resume_step_index(state: Dict[str, Any]) -> int:
 
 def _massage_progress_percent(state: Dict[str, Any]) -> Optional[int]:
     status = state.get("status")
-    if status == "completed":
+    if status == "completed" or (status == "stopped" and state.get("stage") == "completed"):
         return 100
     if status not in {"running", "pausing", "paused", "stopping"}:
         return None
@@ -267,11 +304,17 @@ def _status_summary(state: Dict[str, Any]) -> str:
     if status == "detecting":
         return f"{label}正在检测中，轨迹尚未保存；请查看检测画面，检测稳定后会自动保存轨迹。"
     if status == "detected":
-        return f"{label}检测已完成，轨迹已保存，共 {point_count} 个点；尚未开始按摩。轨迹文件：{trajectory_path}"
+        force_text = ""
+        if state.get("force_target_n") is not None:
+            force_text = f"目标力度={float(state.get('force_target_n')):.1f}N；"
+        return f"{label}检测已完成，轨迹已保存，共 {point_count} 个点；{force_text}尚未开始按摩。轨迹文件：{trajectory_path}"
     if status == "running":
+        force_text = ""
+        if state.get("force_target_n") is not None:
+            force_text = f"，目标力度={float(state.get('force_target_n')):.1f}N"
         return (
             f"{label}按摩正在执行，阶段={state.get('stage')}，动作={state.get('current_action')}，"
-            f"点位={int(state.get('current_point_index') or 0)}/{point_count}，进度={progress}%"
+            f"点位={int(state.get('current_point_index') or 0)}/{point_count}，进度={progress}%{force_text}"
         )
     if status == "pausing":
         return f"{label}已收到暂停请求，正在等待最近安全检查点；当前动作={state.get('current_action')}。"
@@ -284,6 +327,8 @@ def _status_summary(state: Dict[str, Any]) -> str:
     if status == "stopping":
         return f"{label}正在停止，等待执行器退出。"
     if status == "stopped":
+        if state.get("stage") == "completed" or state.get("current_action") == "completed":
+            return f"{label}按摩已完成并停止，进度=100%。"
         return f"{label}按摩已停止。"
     if status == "completed":
         return f"{label}按摩已完成，进度=100%。"
@@ -313,6 +358,10 @@ def _empty_state() -> Dict[str, Any]:
         "resume_step_index": 0,
         "robot_tcp_pose": None,
         "robot_joints_deg": None,
+        "force_target_n": None,
+        "last_force_adjustment": None,
+        "last_force_adjust_seq": None,
+        "pending_force_adjustment": None,
         "message": None,
         "last_result": None,
         "stop_home_result": None,
@@ -371,13 +420,14 @@ class FairinoMassageRuntime:
             self._save_state_unlocked()
             return self._state_copy_unlocked()
 
-    def _write_control_unlocked(self, request: str):
+    def _write_control_unlocked(self, request: str, **extra):
         self.control_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "session_id": self._state.get("session_id"),
             "request": request,
             "updated_at": _now_text(),
         }
+        payload.update(_jsonable(extra))
         tmp_path = self.control_path.with_suffix(".tmp")
         with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -475,7 +525,7 @@ class FairinoMassageRuntime:
                 "success": True,
                 "message": _status_summary(state),
                 "status": state.get("status"),
-                "trajectory_saved": bool(state.get("trajectory_path") and state.get("status") in {"detected", "running", "pausing", "paused", "completed", "error"}),
+                "trajectory_saved": bool(state.get("trajectory_path") and state.get("status") in {"detected", "running", "pausing", "paused", "stopped", "completed", "error"}),
                 "progress_percent": progress,
                 "state": state,
             }
@@ -614,6 +664,7 @@ class FairinoMassageRuntime:
                     target_label=result.get("target_label"),
                     trajectory_path=trajectory.get("trajectory_path"),
                     point_count=trajectory.get("point_count") or 0,
+                    force_target_n=trajectory.get("force_target_n"),
                     actions=[],
                     stage=None,
                     current_action=None,
@@ -677,6 +728,96 @@ class FairinoMassageRuntime:
 
     async def resume(self) -> Dict[str, Any]:
         return self._start_worker(actions="", target="auto", trajectory_path="", resume=True)
+
+    async def adjust_force(
+        self,
+        direction: str = "stronger",
+        delta_n: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        try:
+            delta = _normalize_force_delta(direction, delta_n)
+        except Exception as exc:
+            with self._lock:
+                self._refresh_state_from_disk_unlocked()
+                state = self._state_copy_unlocked()
+            return {"success": False, "message": str(exc), "state": state}
+
+        with self._lock:
+            self._refresh_state_from_disk_unlocked()
+            worker_alive = self._is_worker_alive_unlocked()
+            status = self._state.get("status")
+            if not worker_alive or status != "running":
+                return {
+                    "success": False,
+                    "message": "当前没有正在执行的按摩任务，不能调整力度",
+                    "state": self._state_copy_unlocked(),
+                }
+
+            existing_control = {}
+            if self.control_path.exists():
+                try:
+                    with self.control_path.open("r", encoding="utf-8") as f:
+                        existing_control = json.load(f) or {}
+                except Exception:
+                    existing_control = {}
+            existing_request = str(existing_control.get("request") or "continue").strip().lower()
+            if existing_request in {"pause", "paused", "stop", "stopped"}:
+                return {
+                    "success": False,
+                    "message": "当前已有暂停或停止请求，暂不调整力度",
+                    "state": self._state_copy_unlocked(),
+                }
+
+            pending_adjust = existing_control.get("force_adjust")
+            if isinstance(pending_adjust, dict):
+                pending_seq = str(pending_adjust.get("seq") or "")
+                last_applied_seq = str(self._state.get("last_force_adjust_seq") or "")
+                if pending_seq and pending_seq != last_applied_seq:
+                    try:
+                        delta += float(pending_adjust.get("delta_n") or 0.0)
+                    except (TypeError, ValueError):
+                        pass
+
+            if abs(float(delta)) < 1e-9:
+                self._write_control_unlocked("continue")
+                self._state.update(
+                    pending_force_adjustment=None,
+                    message="力度调整已抵消，保持当前目标力度",
+                )
+                self._save_state_unlocked()
+                return {
+                    "success": True,
+                    "message": "力度调整已抵消，保持当前目标力度",
+                    "delta_n": 0.0,
+                    "state": self._state_copy_unlocked(),
+                }
+
+            seq = f"force-{time.time_ns()}"
+            adjustment = {
+                "seq": seq,
+                "delta_n": float(delta),
+                "source": "小智语音力度调整",
+                "created_at": _now_text(),
+            }
+            self._write_control_unlocked("continue", force_adjust=adjustment)
+            pending = dict(adjustment)
+            self._state.update(
+                pending_force_adjustment=pending,
+                message=(
+                    f"已请求按摩力度{'增大' if delta > 0 else '减小'} "
+                    f"{abs(float(delta)):.1f}N"
+                ),
+            )
+            self._save_state_unlocked()
+            return {
+                "success": True,
+                "message": (
+                    f"已请求按摩力度{'增大' if delta > 0 else '减小'} "
+                    f"{abs(float(delta)):.1f}N，将在当前动作检查周期生效"
+                ),
+                "delta_n": float(delta),
+                "state": self._state_copy_unlocked(),
+            }
 
     def _start_worker(
         self,
@@ -752,6 +893,7 @@ class FairinoMassageRuntime:
                 target=normalized_target,
                 trajectory_path=str(path),
                 actions=normalized_actions,
+                force_target_n=state.get("force_target_n"),
                 stage=start_stage,
                 current_action="start",
                 current_point_index=start_point_index,
@@ -773,6 +915,7 @@ class FairinoMassageRuntime:
                     normalized_target,
                     str(path),
                     list(normalized_actions),
+                    state.get("force_target_n"),
                     start_stage,
                     start_point_index,
                     start_action,
@@ -795,6 +938,7 @@ class FairinoMassageRuntime:
         target: str,
         trajectory_path: str,
         actions: List[str],
+        force_target_n: Optional[float],
         start_stage: str,
         start_point_index: int,
         start_action: str,
@@ -836,6 +980,8 @@ class FairinoMassageRuntime:
                 "--result-path",
                 str(result_path),
             ]
+            if force_target_n not in (None, ""):
+                cmd.extend(["--force-target-n", str(float(force_target_n))])
             env = os.environ.copy()
             env.setdefault("PYTHONUNBUFFERED", "1")
 
@@ -904,7 +1050,7 @@ class FairinoMassageRuntime:
                 )
             elif result.get("ok"):
                 self._update_state(
-                    status="completed",
+                    status="stopped",
                     stage="completed",
                     current_action="completed",
                     current_point_index=0,
@@ -915,7 +1061,7 @@ class FairinoMassageRuntime:
                     resume_action=None,
                     resume_repeat_index=0,
                     resume_step_index=0,
-                    message="按摩动作执行完成",
+                    message="按摩动作执行完成，任务已停止",
                     last_result=result,
                 )
             else:

@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-`ft.py` 是 FAIRINO 机械臂的 ROS 2 控制版恒力按摩演示入口。程序基于 RealSense 深度相机、背部膀胱经视觉检测、大腿 RTMPose 姿态检测、相机到机械臂标定矩阵和六维力传感器，实现轨迹锁定、轨迹保存、机械臂安全转场、贴近目标力、点筋、分筋、顺筋等动作。
+`ft.py` 是 FAIRINO 机械臂的 ROS 2 控制版恒力按摩演示入口。程序基于 RealSense 深度相机、背部膀胱经视觉检测、大腿 RTMPose 姿态检测、相机到机械臂标定矩阵和六维力传感器，实现轨迹锁定、轨迹保存、机械臂安全转场、贴近目标力、点筋小幅分筋、分筋、顺筋等动作。
 
 当前已实现的按摩部位：
 
@@ -103,8 +103,8 @@ MASSAGE_TARGET=leg_inner LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 2. 根据腿部轨迹可达性做姿态筛选和必要的法向角调整。
 3. 初始化六维力传感器和力控通道。
 4. 移动到第一个采样点的悬空位。
-5. 对每个采样点执行点筋和分筋：
-   - 点筋：从悬空位沿局部法向贴近，达到目标力后保压，默认每个点执行 3 次。
+5. 对每个采样点执行点筋动作和分筋：
+   - 点筋动作：默认已替换为小幅分筋。从悬空位沿局部法向贴近，达到目标力后沿分筋轴做小幅正向、反向、回中心移动，默认每个点执行 3 次。
    - 分筋：贴近到目标力后，沿分筋轴正向、反向、回中心移动并保压，默认每个点执行 3 轮。
 6. 回到顺筋起点。
 7. 执行顺筋：沿采样点序列移动，并在每个点做目标力微调保压。
@@ -209,7 +209,7 @@ JSON 主要字段：
 | --- | --- | --- |
 | `LASTTIME_ROS2_FORCE` | `1` | 是否启用 ROS 2 版恒力贴近和保压流程 |
 | `LASTTIME_FORCE_N` | `30.0` | 背部目标力，单位 N |
-| `THIGH_OUTER_FORCE_N` | `40.0` | 大腿外侧目标力，单位 N |
+| `THIGH_OUTER_FORCE_N` | `50.0` | 大腿外侧目标力，单位 N |
 | `THIGH_INNER_FORCE_N` | `30.0` | 大腿内侧目标力，单位 N |
 | `THIGH_FORCE_N` | 空 | 腿部外侧/内侧全局目标力覆盖，优先级低于上述分部位变量 |
 | `LASTTIME_THIGH_FORCE_N` | 空 | 腿部目标力备用覆盖变量 |
@@ -228,7 +228,11 @@ JSON 主要字段：
 | `LASTTIME_FORCE_HOLD_KP_MM_PER_N` | `0.04` | 保压微调比例；启动脚本默认覆盖为 `0.02` |
 | `LASTTIME_FORCE_HOLD_MAX_STEP_MM` | `0.15` | 单次保压微调最大位移；启动脚本默认覆盖为 `0.08` |
 | `LASTTIME_FORCE_RELEASE_LIMIT_N` | `5.0` | 回悬空位后的卸力判定阈值 |
+| `FT_LIVE_FORCE_TARGET_MIN_N` | `1.0` | 运行中语音调整目标力的下限 |
+| `FT_LIVE_FORCE_TARGET_MAX_N` | `80.0` | 运行中语音调整目标力的上限 |
 | `FT_DIAN_JIN_REPEAT_COUNT` | `3` | 每个按摩点的点筋重复次数 |
+| `FT_DIAN_JIN_MODE` | `small_fen` | 点筋动作模式；`small_fen` 表示用小幅分筋替代原点按 |
+| `FT_DIAN_AS_SMALL_FEN_LATERAL_MM` | `min(分筋力控偏移*0.5, 6)` | 点筋替代小幅分筋的横向偏移 |
 | `FT_FEN_JIN_REPEAT_COUNT` | `3` | 每个按摩点的分筋重复轮数 |
 | `LASTTIME_FORCE_GUARD` | `0` | 是否启用 FAIRINO `FT_Guard` 碰撞守护 |
 | `LASTTIME_FORCE_ALLOW_SKIP_ZERO` | `1` | 校零失败但读数接近零点时是否允许继续 |

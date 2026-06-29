@@ -113,6 +113,7 @@ python3 ft_agent_api.py execute \
 | --- | --- | --- |
 | `self.fairino_massage.detect` | “进行膀胱经检测”、“检测大腿内侧” | 调用检测并保存轨迹 |
 | `self.fairino_massage.start` | “开始按摩”、“只做顺筋” | 使用当前轨迹后台执行动作 |
+| `self.fairino_massage.adjust_force` | “大力一些”、“小力一些” | 按摩运行中调整目标力度；默认每次增减 1N，不中断当前按摩 |
 | `self.fairino_massage.pause` | “暂停按摩” | 在最近安全检查点暂停并保存状态 |
 | `self.fairino_massage.resume` | “继续按摩” | 从上次暂停点继续 |
 | `self.fairino_massage.stop` | “停止按摩” | 请求停止当前按摩任务 |
@@ -125,6 +126,8 @@ python3 ft_agent_api.py execute \
 ```
 
 状态中记录 `target`、`trajectory_path`、`actions`、`stage`、`current_point_index`、`resume_stage`、`resume_point_index`、`robot_tcp_pose`、`robot_joints_deg` 等字段。暂停采用软暂停策略：点筋/分筋会在点位动作之间暂停；力控顺筋会先回到悬空位，再保存暂停点。紧急情况仍应使用现场物理急停。
+
+运行中力度调整通过同一个控制文件传递，`self.fairino_massage.adjust_force` 会写入一次性 `force_adjust.seq`，执行进程在最近 checkpoint 消费并同步 `force_target_n` 到状态文件。默认步长由 `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N=1.0` 控制，底层目标力会被限制在 `FT_LIVE_FORCE_TARGET_MIN_N` 到 `FT_LIVE_FORCE_TARGET_MAX_N` 范围内。
 
 ## 返回格式
 

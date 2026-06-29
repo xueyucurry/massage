@@ -40,6 +40,15 @@ async def start_massage(args: Dict[str, Any]) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+async def adjust_force(args: Dict[str, Any]) -> str:
+    runtime = get_runtime()
+    result = await runtime.adjust_force(
+        direction=args.get("direction") or "stronger",
+        delta_n=_optional_float(args.get("delta_n")),
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
 async def pause_massage(args: Dict[str, Any]) -> str:
     result = await get_runtime().pause()
     return json.dumps(result, ensure_ascii=False)

@@ -128,6 +128,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         self._agent_point_count = 0
         self._agent_control_repeat_index = 0
         self._agent_control_step_index = 0
+        self._agent_applied_force_adjust_seqs = set()
 
     def _agent_force_reading_valid(self, data):
         if not isinstance(data, (list, tuple)) or len(data) < 6:
@@ -172,6 +173,47 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
     def init_force_controller(self):
         result = super().init_force_controller()
         self._install_force_read_guard()
+        return result
+
+    def _apply_live_force_adjustment(self, adjustment):
+        if not isinstance(adjustment, dict):
+            return None
+
+        seq = str(adjustment.get("seq") or adjustment.get("id") or "").strip()
+        if seq and seq in self._agent_applied_force_adjust_seqs:
+            return None
+
+        previous = self._current_force_target_n()
+        if adjustment.get("target_force_n") not in (None, ""):
+            requested = abs(float(adjustment["target_force_n"]))
+        else:
+            delta_n = float(adjustment.get("delta_n") or 0.0)
+            requested = previous + delta_n
+
+        old_force, new_force = self.set_force_target_n(
+            requested,
+            context=str(adjustment.get("source") or "语音力度调整"),
+        )
+        if seq:
+            self._agent_applied_force_adjust_seqs.add(seq)
+
+        applied_delta = float(new_force) - float(old_force)
+        result = {
+            "seq": seq or None,
+            "requested_delta_n": float(adjustment.get("delta_n") or applied_delta),
+            "applied_delta_n": applied_delta,
+            "previous_force_target_n": float(old_force),
+            "force_target_n": float(new_force),
+            "changed": abs(applied_delta) > 1e-6,
+            "created_at": adjustment.get("created_at"),
+        }
+        if result["changed"]:
+            print(
+                f"[Agent] 语音力度调整: {old_force:.1f}N -> {new_force:.1f}N "
+                f"(delta={applied_delta:+.1f}N)"
+            )
+        else:
+            print(f"[Agent] 语音力度调整已到边界: {new_force:.1f}N")
         return result
 
     def capture_back_trajectory(self, timeout_s=None, stable_frames=None, display=False):
@@ -363,18 +405,34 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             "message": message,
             "safe_to_pause": bool(safe_to_pause),
             "robot_state": self.robot_state_snapshot(),
+            "force_target_n": float(self.force_target_n),
         }
         if extra:
             checkpoint.update(extra)
         self._agent_last_checkpoint = dict(checkpoint)
 
-        request = None
+        raw_request = None
         if hasattr(control, "checkpoint"):
-            request = control.checkpoint(checkpoint)
+            raw_request = control.checkpoint(checkpoint)
         elif callable(control):
-            request = control(checkpoint)
+            raw_request = control(checkpoint)
 
-        request = str(request or "continue").strip().lower()
+        force_update = None
+        if isinstance(raw_request, dict):
+            force_adjustment = raw_request.get("force_adjustment") or raw_request.get("force_adjust")
+            if force_adjustment:
+                force_update = self._apply_live_force_adjustment(force_adjustment)
+            request = str(raw_request.get("request") or "continue").strip().lower()
+        else:
+            request = str(raw_request or "continue").strip().lower()
+
+        if force_update:
+            checkpoint["force_target_n"] = float(self.force_target_n)
+            checkpoint["last_force_adjustment"] = force_update
+            self._agent_last_checkpoint = dict(checkpoint)
+            if hasattr(control, "force_target_changed"):
+                control.force_target_changed(force_update, checkpoint)
+
         if request in {"pause", "paused", "stop", "stopped"}:
             status = "paused" if request in {"pause", "paused"} else "stopped"
             raise MassageExecutionInterrupted(status, checkpoint)
@@ -537,7 +595,6 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         return ok
 
     def _hold_target_force(self, frame, split_offset_mm, start_offset_mm, seconds, context):
-        target_n = abs(float(self.force_target_n))
         offset = float(start_offset_mm)
         max_offset = max(float(self.force_approach_max_offset_mm), float(ft.FORCE_CONTACT_OFFSET_MM))
         min_offset = -float(self.hover_height_mm)
@@ -553,6 +610,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 action_text = "停止" if request == "stop_pending" else "暂停"
                 print(f"[Force] {context}: 收到{action_text}请求，提前结束保压并回悬空位")
                 return offset, False
+            target_n = self._current_force_target_n()
             force_n, data = self._read_force_axis(context)
             err_n = target_n - force_n
             if abs(err_n) > ft.FORCE_TARGET_TOL_N:
@@ -569,7 +627,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             if now - last_print > 0.4:
                 print(
                     f"[Force] {context}: offset={offset:+.1f}mm "
-                    f"Fz={data[2]:.2f}N press={force_n:.2f}N"
+                    f"Fz={data[2]:.2f}N press={force_n:.2f}N target={target_n:.1f}N"
                 )
                 last_print = now
             time.sleep(self.force_controller._monitor_period)
@@ -605,6 +663,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             frame,
             -(self.hover_height_mm - ft.DIAN_JIN_DEPTH_MM),
         )
+        use_small_fen = ft.DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}
+        small_fen_lateral_mm = abs(float(ft.DIAN_AS_SMALL_FEN_LATERAL_MM))
         repeat_count = int(ft.DIAN_JIN_REPEAT_COUNT)
         start_repeat_index = max(0, min(repeat_count, int(start_repeat_index or 0)))
         if start_repeat_index >= repeat_count:
@@ -619,7 +679,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 repeat_idx,
                 0,
             )
-            self.update_preview_status(f"点筋 {round_text}", frame.get("index"))
+            action_label = "点筋小幅分筋" if use_small_fen else "点筋"
+            self.update_preview_status(f"{action_label} {round_text}", frame.get("index"))
 
             if ft.LASTTIME_ROS2_FORCE:
                 ok = False
@@ -632,21 +693,49 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 try:
                     if not self._move_to_hover_for_force(frame, f"点筋悬空位 {round_text}"):
                         return False
-                    offset, reached = self._approach_to_target_force(frame, f"点筋 {round_text}")
+                    offset, reached = self._approach_to_target_force(frame, f"{action_label}中心 {round_text}")
                     if not reached:
                         return False
-                    offset, ok = self._hold_target_force(
-                        frame,
-                        0.0,
-                        offset,
-                        ft.FORCE_DIAN_DWELL_S,
-                        f"点筋保压 {round_text}",
-                    )
+                    if use_small_fen:
+                        offset, ok = self._hold_target_force(
+                            frame,
+                            0.0,
+                            offset,
+                            ft.FORCE_FEN_DWELL_S,
+                            f"{action_label}中心保压 {round_text}",
+                        )
+                        if not ok:
+                            return False
+                        for label, split_offset in (
+                            (f"{action_label}偏移+ {round_text}", small_fen_lateral_mm),
+                            (f"{action_label}偏移- {round_text}", -small_fen_lateral_mm),
+                            (f"{action_label}回中心 {round_text}", 0.0),
+                        ):
+                            pose = self._pose_from_frame_offset(frame, offset, split_offset)
+                            if not self._move_force_pose_checked(pose, label):
+                                return False
+                            offset, ok = self._hold_target_force(
+                                frame,
+                                split_offset,
+                                offset,
+                                ft.FORCE_FEN_DWELL_S,
+                                f"{label}保压",
+                            )
+                            if not ok:
+                                return False
+                    else:
+                        offset, ok = self._hold_target_force(
+                            frame,
+                            0.0,
+                            offset,
+                            ft.FORCE_DIAN_DWELL_S,
+                            f"点筋保压 {round_text}",
+                        )
                     repeat_completed = bool(ok)
                 except MassageExecutionInterrupted:
                     raise
                 except Exception as exc:
-                    print(f"    警告：点筋{round_text}力控失败 ({exc})")
+                    print(f"    警告：{action_label}{round_text}力控失败 ({exc})")
                     return False
                 finally:
                     if repeat_completed:
@@ -669,6 +758,58 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                         ok = False
                 if not ok:
                     return False
+                continue
+
+            if use_small_fen:
+                for label, split_offset in (
+                    (f"点筋小幅分筋偏移+ {round_text}", small_fen_lateral_mm),
+                    (f"点筋小幅分筋偏移- {round_text}", -small_fen_lateral_mm),
+                    (f"点筋小幅分筋回中心 {round_text}", 0.0),
+                ):
+                    self._agent_control_checkpoint(
+                        message=f"{label}: 准备运动",
+                        safe_to_pause=False,
+                    )
+                    pose = self._pose_from_frame_offset(
+                        frame,
+                        -(self.hover_height_mm - ft.DIAN_JIN_DEPTH_MM),
+                        split_offset_mm=split_offset,
+                    )
+                    ret = self.robot.MoveCart(
+                        desc_pos=pose,
+                        tool=ft.ROS2_TOOL,
+                        user=ft.ROS2_USER,
+                        vel=ft.MOVE_VEL_SLOW,
+                        blendT=ft.BLEND_BLOCKING,
+                    )
+                    if ret != 0:
+                        print(f"    警告：{label}失败 (err={ret})")
+                        return False
+                    time.sleep(0.2)
+
+                ret = self.robot.MoveCart(
+                    desc_pos=hover_pose,
+                    tool=ft.ROS2_TOOL,
+                    user=ft.ROS2_USER,
+                    vel=ft.MOVE_VEL_SLOW,
+                    blendT=ft.BLEND_BLOCKING,
+                )
+                if ret != 0:
+                    print(f"    警告：点筋小幅分筋{round_text}回到悬空位失败 (err={ret})")
+                    return False
+                next_stage, next_action, next_point, next_repeat, next_step = self._next_resume_after_repeat(
+                    "dian_jin",
+                    repeat_idx,
+                )
+                self._agent_control_checkpoint(
+                    message=f"点筋小幅分筋{round_text}: 已回到悬空位，可暂停",
+                    safe_to_pause=True,
+                    next_stage=next_stage,
+                    next_action=next_action,
+                    next_point_index=next_point,
+                    next_repeat_index=next_repeat,
+                    next_step_index=next_step,
+                )
                 continue
 
             self._agent_control_checkpoint(
@@ -1122,6 +1263,11 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
 
         point_actions = [action for action in actions if action in {"dian_jin", "fen_jin"}]
         run_shun = "shun_jin" in actions
+        dian_action_text = (
+            "点筋小幅分筋"
+            if ft.DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}
+            else "点筋"
+        )
         point_failures = []
         shun_candidate_frames = []
         shun_ok = True
@@ -1289,7 +1435,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     }
 
                     if "dian_jin" in point_actions and not skip_dian_jin:
-                        print("  点筋...")
+                        print(f"  {dian_action_text}...")
                         dian_start_repeat = resume_repeat_index if resume_action == "dian_jin" else 0
                         self._set_agent_control_context("point_actions", "dian_jin", i, dian_start_repeat, 0)
                         self._control_checkpoint(
@@ -1299,7 +1445,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                             current_point_index=i,
                             next_stage="point_actions",
                             next_point_index=i,
-                            message=f"准备执行点{point_no}点筋",
+                            message=f"准备执行点{point_no}{dian_action_text}",
                             extra={
                                 "current_repeat_index": dian_start_repeat,
                                 "current_step_index": 0,
@@ -1311,8 +1457,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                             frame,
                             start_repeat_index=dian_start_repeat,
                         ):
-                            point_failures.append((point_no, "点筋"))
-                            print(f"    警告：点{point_no}点筋失败")
+                            point_failures.append((point_no, dian_action_text))
+                            print(f"    警告：点{point_no}{dian_action_text}失败")
                             if not ft.FT_CONTINUE_ON_POINT_ERROR:
                                 return False
                             skip_remaining_point_actions = True
