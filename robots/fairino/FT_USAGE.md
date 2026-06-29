@@ -4,6 +4,8 @@
 
 `ft.py` 是 FAIRINO 机械臂的 ROS 2 控制版恒力按摩演示入口。程序基于 RealSense 深度相机、背部膀胱经视觉检测、大腿 RTMPose 姿态检测、相机到机械臂标定矩阵和六维力传感器，实现轨迹锁定、轨迹保存、机械臂安全转场、贴近目标力、点筋小幅分筋、分筋、顺筋等动作。
 
+除手动 OpenCV 流程外，当前项目还提供顶层 `./massage` 快捷脚本和 `py-xiaozhi` 语音智能体。智能体通过 MCP 工具调用 `ft_agent_api.py`，可以语音完成检测、开始按摩、暂停、继续、停止、状态查询和运行中力度调整；小智 GUI 会显示检测/按摩状态、轨迹、进度和常用快捷指令。
+
 当前已实现的按摩部位：
 
 | 部位 | 选择值 | 说明 |
@@ -45,6 +47,30 @@ MASSAGE_TARGET=leg_inner LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 ```
 
 非交互输入环境下，如果没有设置 `MASSAGE_TARGET`，程序默认进入背部膀胱经模式。
+
+## 顶层快捷脚本
+
+日常操作优先从项目根目录使用 `./massage`：
+
+```bash
+cd /home/franka/massage
+./massage gui
+```
+
+常用命令：
+
+| 命令 | 说明 |
+| --- | --- |
+| `./massage gui` | 启动小智 GUI 和语音智能体；默认清理上一次小智 GUI、FAIRINO 语音按摩子进程和旧的运行态，并把状态重置为“就绪” |
+| `./massage calibrate` | 启动 RealSense + ArUco 相机到机械臂标定程序，保存新的 `camera_to_robot.json` |
+| `./massage start` | 启动 FAIRINO ROS 2 / MoveIt 后台服务，通过探针后进入手动 `ft.py` 流程 |
+| `./massage stop` | 请求停止按摩相关任务，回到记录的起始位置，并停止 ROS 2 / MoveIt 后台服务 |
+| `./massage clean` | 清理残留 ROS 2、FAIRINO、MoveIt、`ft.py` 进程 |
+| `./massage record-home` | 将当前 TCP 位姿记录为启动、停止和 GUI 启动时的起始/回位姿态 |
+| `./massage home` | 手动回到已记录的起始/回位姿态 |
+| `./massage help` | 查看脚本帮助和关键环境变量 |
+
+`./massage gui` 默认会先把旧会话状态写为 `idle`，界面显示“就绪，等待语音指令”，避免重启后沿用上次的暂停或停止状态。`./massage stop` 是普通软件停止流程，不是物理急停；危险情况下仍必须使用机械臂急停按钮。
 
 ## 窗口和按键
 
@@ -95,6 +121,58 @@ MASSAGE_TARGET=leg_inner LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 8. 程序自动连接 ROS 2 控制服务、上使能、移动到安全高度、初始化力传感器、执行动作并返回安全位置。
 9. 动作完成后按 `q` 退出窗口。
 
+## 语音控制流程
+
+语音控制使用小智 GUI：
+
+```bash
+cd /home/franka/massage
+./massage gui
+```
+
+启动后 GUI 会打开“FAIRINO 按摩机器人”操作台，显示部位、轨迹、阶段、动作、点位、目标力度、进度、状态消息和常用快捷指令。GUI 状态来自：
+
+```text
+/home/franka/massage/robots/fairino/ft_agent_state/current_session.json
+```
+
+典型语音流程：
+
+1. 说“检测膀胱经”或点击“检测膀胱经”。
+2. 小智调用 `self.fairino_massage.detect`，默认打开检测画面，检测稳定后自动保存轨迹。
+3. 检测完成后，客户端会请求小智调用 `self.fairino_massage.status` 检查状态，并播报“检测已完成，轨迹已保存”。
+4. 说“开始按摩”，小智调用 `self.fairino_massage.start`，使用当前保存轨迹执行点筋、分筋、顺筋。
+5. 运行中可以说“暂停按摩”“继续按摩”“停止按摩”“大力一些”“小力一些”“检测状态/按摩状态”。
+
+常用语音意图：
+
+| 语音 | 调用工具 | 行为 |
+| --- | --- | --- |
+| “检测膀胱经” | `self.fairino_massage.detect` | 检测背部膀胱经并保存轨迹 |
+| “检测大腿外侧” | `self.fairino_massage.detect` | 检测大腿外侧轨迹 |
+| “检测大腿内侧” | `self.fairino_massage.detect` | 检测大腿内侧轨迹 |
+| “开始按摩” | `self.fairino_massage.start` | 按当前轨迹执行点筋、分筋、顺筋 |
+| “只做顺筋” | `self.fairino_massage.start` | 使用当前轨迹只执行顺筋 |
+| “暂停按摩” | `self.fairino_massage.pause` | 在最近安全检查点暂停，回到当前点贴近前的局部悬空位并保存恢复点 |
+| “继续按摩” | `self.fairino_massage.resume` | 从保存的阶段、动作、点位、重复次数和步骤继续 |
+| “停止按摩” | `self.fairino_massage.stop` | 先回当前点局部悬空位，再回记录的起始位置 |
+| “大力一些/小力一些” | `self.fairino_massage.adjust_force` | 在最近控制检查周期增减目标力 |
+| “检测状态/按摩到哪里了” | `self.fairino_massage.status` | 返回当前会话、轨迹、阶段、进度和状态消息 |
+
+状态含义：
+
+| 状态 | 含义 |
+| --- | --- |
+| `idle` | 刚启动或清理后就绪，等待语音指令 |
+| `detecting` | 正在检测并生成轨迹 |
+| `detected` | 检测完成，轨迹已保存，尚未开始按摩 |
+| `running` | 正在执行按摩动作 |
+| `pausing` | 已收到暂停请求，等待安全检查点 |
+| `paused` | 已暂停，可继续 |
+| `stopping` | 正在停止或回起始位置 |
+| `stopped` | 已停止；自然执行完成也会显示为停止，同时 `stage=completed`、进度 100% |
+| `error` | 检测或执行异常，需要查看状态文件和日志 |
+
 ## 按摩动作
 
 完整动作序列如下：
@@ -112,6 +190,49 @@ MASSAGE_TARGET=leg_inner LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 9. 关闭力控通道。
 
 如果 `LASTTIME_ROS2_FORCE=0`，程序会关闭恒力贴近流程，改用非力控的悬空/位置动作分支。
+
+## 标定流程和生效规则
+
+相机到机械臂标定通过顶层脚本启动：
+
+```bash
+cd /home/franka/massage
+./massage calibrate
+```
+
+标定程序为：
+
+```text
+/home/franka/massage/shared/calibration/calibrate_camera_to_robot_aruco.py
+```
+
+默认结果保存到：
+
+```text
+/home/franka/massage/shared/calibration/camera_to_robot.json
+```
+
+`robots/fairino/camera_to_robot.json` 是指向该共享文件的软链接。背部和腿部检测在生成新轨迹时会读取当前最新的 `camera_to_robot.json`，并把转换后的机器人坐标写入轨迹 JSON 的 `frames[*].point_mm` 和 `points_mm`。
+
+关键规则：
+
+- 标定结果只在“检测并生成新轨迹”时生效。
+- 按摩执行阶段读取的是已保存轨迹中的机器人坐标，不会重新用标定矩阵计算旧轨迹。
+- 如果重新做了标定，必须重新说“检测膀胱经/检测大腿外侧/检测大腿内侧”生成新轨迹，再开始按摩。
+- 暂停后继续按摩使用同一条已保存轨迹，不会自动切换到重新标定后的坐标。
+
+标定常用环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CALIBRATION_PYTHON` | `/home/franka/massage/env/.venv/bin/python` | 运行标定程序的 Python |
+| `ROBOT_IP` | `192.168.58.2` | FAIRINO 控制器 IP |
+| `CALIB_OUTPUT_FILE` | `camera_to_robot.json` | 标定矩阵输出文件 |
+| `CALIB_REPORT_FILE` | `camera_to_robot_aruco_report.json` | 标定报告输出文件 |
+| `CALIB_PAIR_LOG_FILE` | `camera_robot_aruco_pairs.json` | 标定采样点对日志 |
+| `CALIB_ARUCO_DICT` | `DICT_5X5_250` | ArUco 字典 |
+| `CALIB_ARUCO_ID` | `0` | ArUco ID |
+| `CALIB_ARUCO_MARKER_SIZE_M` | `0.09` | ArUco 标记边长，单位 m |
 
 ## 输出文件
 
@@ -165,6 +286,25 @@ JSON 主要字段：
 | `LASTTIME_ROS2_SCRIPT` | `lasttime_ros2.py` | 用启动脚本运行 `ft.py` 时必须设为 `ft.py` |
 | `LASTTIME_ROS2_PROBE_ONLY` | `0` | 设为 `1` 时启动脚本只做 ROS 2 探针，不进入视觉流程 |
 | `FT_TRAJECTORY_OUTPUT_DIR` | `robots/fairino/ft_locked_trajectory_output` | 轨迹保存目录 |
+
+### 快捷脚本和语音智能体
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `XIAOZHI_PYTHON` | `py-xiaozhi/.venv-linux/bin/python` | 小智 GUI 使用的 Python |
+| `XIAOZHI_GUI_CLEAN_ON_START` | `1` | `./massage gui` 启动时是否清理旧 GUI、旧 agent 进程和旧运行态 |
+| `MASSAGE_HOME_POSE_FILE` | `robots/fairino/massage_home_pose.json` | 起始/回位姿态文件 |
+| `MASSAGE_HOME_ON_START` | `1` | `./massage start` 前是否回记录位 |
+| `MASSAGE_HOME_ON_STOP` | `1` | `./massage stop` 时是否回记录位 |
+| `MASSAGE_HOME_ON_GUI_START` | `1` | `./massage gui` 启动前是否回记录位 |
+| `MASSAGE_HOME_MOVE_VEL` | `20` | 回记录位速度 |
+| `MASSAGE_HOME_SAFE_Z_MM` | `300` | 回记录位过程中的安全高度 |
+| `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N` | `1.0` | 语音“大力/小力”默认每次增减的力，单位 N |
+| `FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE` | `1` | 检测完成后是否请求小智自动查询状态并播报 |
+| `FAIRINO_MASSAGE_RETURN_HOME_ON_STOP` | `1` | 语音停止按摩后是否回记录的起始位置 |
+| `FAIRINO_MASSAGE_STOP_WAIT_S` | `20` | 停止时等待按摩执行进程正常退出的时间 |
+
+语音智能体默认状态文件为 `robots/fairino/ft_agent_state/current_session.json`，控制文件为 `robots/fairino/ft_agent_state/current_control.json`。GUI 读取状态文件时支持用 `FT_AGENT_STATE_FILE` 临时覆盖；MCP runtime 默认使用上述固定路径。
 
 ### ROS 2 和安全转场
 
@@ -275,6 +415,9 @@ MASSAGE_TARGET=back LASTTIME_ROS2_FORCE=0 LASTTIME_ROS2_SCRIPT=ft.py ./run_lastt
 | 状态话题超时 | ROS 2 discovery 或硬件节点异常 | 重启启动脚本，必要时执行 `ros2 daemon stop && ros2 daemon start` |
 | 背部不能保存轨迹 | 检测未稳定或深度有效率不足 | 调整相机角度、人体位置、光照，观察红绿采样点 |
 | 腿部不能保存轨迹 | RTMPose 未检测到髋膝点或深度有效率不足 | 调整人体朝向、相机视野、`THIGH_DIRECTION` 和 `THIGH_OFFSET_MM` |
+| 小智说已启动检测但迟迟没有播报完成 | 检测仍在进行、检测失败或自动状态查询未触发 | 查看 GUI 右侧状态和 `ft_agent_state/logs`；也可以语音问“检测状态”强制调用 `status` |
+| 小智显示按摩进度但机械臂不动 | 执行进程异常、ROS 2 服务未就绪、旧轨迹不可达或正在等待安全检查点 | 语音问“按摩状态”，查看 `current_session.json`、`ft_agent_state/logs` 和 ROS 2 探针输出 |
+| 重新标定后按摩位置没有变化 | 仍在使用旧轨迹或暂停会话 | 重新检测生成新轨迹后再开始按摩 |
 | `FT_SetZero(1)` 失败 | 末端未悬空、传感器负载参数异常或总线异常 | 让末端完全无接触后重启；检查 `LASTTIME_FORCE_SENSOR_BUS` |
 | 贴近到最大 offset 仍未达到目标力 | 标定、法向、工具长度或人体位置不准确 | 检查轨迹调试图、`LASTTIME_TOOL_TIP_LENGTH_MM`、`THIGH_FORCE_APPROACH_MAX_OFFSET_MM` |
 | 移动失败或不可达 | 目标点超工作空间或姿态逆解失败 | 调整人体/相机位置，降低法向倾角限制，或开启 MoveIt 兜底 |
@@ -285,6 +428,11 @@ MASSAGE_TARGET=back LASTTIME_ROS2_FORCE=0 LASTTIME_ROS2_SCRIPT=ft.py ./run_lastt
 | 文件 | 说明 |
 | --- | --- |
 | `ft.py` | ROS 2 恒力按摩主程序 |
+| `../../massage` | 项目顶层快捷启动脚本 |
+| `ft_agent_api.py` | 面向智能体的检测、轨迹加载、执行、暂停/恢复接口 |
+| `ft_agent_process.py` | 小智后台子进程入口 |
+| `../../py-xiaozhi/src/mcp/tools/fairino_massage` | 小智 FAIRINO 按摩 MCP 工具 |
+| `../../py-xiaozhi/src/display/gui_display.qml` | 小智按摩机器人 GUI 界面 |
 | `run_lasttime_ros2.sh` | ROS 2 控制服务启动和探针脚本 |
 | `lasttime.py` | 背部视觉检测、轨迹生成和预览基础逻辑 |
 | `force_control.py` | 力传感器常量和工具函数 |
@@ -292,3 +440,4 @@ MASSAGE_TARGET=back LASTTIME_ROS2_FORCE=0 LASTTIME_ROS2_SCRIPT=ft.py ./run_lastt
 | `dianjing.py` | 标定矩阵加载和点云坐标变换 |
 | `RTMPOSE.py` | RTMPose 配置、权重和旋转枚举 |
 | `run_shunjin_only.py` | 复用 `ft.py` 的顺筋单项测试入口 |
+| `../../shared/calibration/calibrate_camera_to_robot_aruco.py` | RealSense + ArUco 相机到机械臂标定程序 |
