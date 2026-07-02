@@ -114,14 +114,18 @@ python3 ft_agent_api.py execute \
 | 工具 | 语音意图示例 | 说明 |
 | --- | --- | --- |
 | `self.fairino_massage.detect` | “进行膀胱经检测”、“检测大腿内侧” | 后台启动检测，默认打开检测画面，检测稳定后保存轨迹 |
-| `self.fairino_massage.start` | “开始按摩”、“只做顺筋” | 使用当前轨迹后台执行动作 |
-| `self.fairino_massage.adjust_force` | “大力一些”、“小力一些” | 按摩运行中调整目标力度；默认每次增减 1N，不中断当前按摩 |
+| `self.fairino_massage.start` | “开始按摩”、“开始全套按摩” | 使用当前轨迹后台执行动作 |
+| `self.fairino_massage.shunjin` | “只做顺筋”、“检查顺筋效果” | 使用当前轨迹只执行顺筋，不执行点筋和分筋 |
+| `self.fairino_massage.shun_jin` | “单独顺筋”、“测试顺筋贴合” | `shunjin` 的别名 |
+| `self.fairino_massage.adjust_force` | “大力一些”、“小力一些” | 按摩运行中调整目标力度；默认每次增减 5N，不中断当前按摩 |
 | `self.fairino_massage.pause` | “暂停按摩” | 在最近安全检查点暂停并保存状态 |
 | `self.fairino_massage.resume` | “继续按摩” | 从上次暂停点继续 |
 | `self.fairino_massage.continue` | “接着按摩”、“恢复按摩” | `resume` 的别名 |
 | `self.fairino_massage.resume_massage` | “从暂停处继续” | `resume` 的别名 |
 | `self.fairino_massage.stop` | “停止按摩” | 请求停止当前按摩任务 |
 | `self.fairino_massage.status` | “现在按摩到哪里了” | 查询当前会话和进度 |
+
+力度调整参数以方向为准：`direction=stronger` 表示增大，`direction=softer` 表示减小。用户说“减轻 10N”时应传 `direction=softer, delta_n=10`，底层会归一化为 `-10N`；用户说“增大 10N”时传 `direction=stronger, delta_n=10`，底层归一化为 `+10N`。
 
 MCP `detect` 工具返回 `success=true` 只表示检测任务已启动，不表示轨迹已经保存。检测子进程完成后会写入 `status=detected`、`trajectory_path` 和 `point_count`。默认开启 `FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE=1` 时，运行时会请求小智再次调用 `self.fairino_massage.status`，由小智根据工具返回结果播报“检测已完成，轨迹已保存”。
 
@@ -143,9 +147,9 @@ MCP `detect` 工具返回 `success=true` 只表示检测任务已启动，不表
 
 暂停采用软暂停策略：点筋/分筋会在动作检查点响应暂停，先退回当前按摩点贴近前的局部悬空位，再保存阶段、动作、点位、重复次数和步骤；力控顺筋会回到当前点悬空位后保存暂停点。继续按摩会从这些字段恢复，例如当前点筋已经完成 1 次，则恢复后只执行剩余点筋次数。紧急情况仍应使用现场物理急停。
 
-停止按摩会先请求执行进程停止并回到当前点局部悬空位，随后通过顶层 `./massage home` 回到 `massage_home_pose.json` 记录的起始位置。这个回位流程可以用 `FAIRINO_MASSAGE_RETURN_HOME_ON_STOP=0` 关闭。
+停止按摩会先请求执行进程停止并回到当前点局部悬空位，随后通过顶层 `./massage home` 回到 `massage_home_pose.json` 记录的起始位置。这个回位流程可以用 `FAIRINO_MASSAGE_RETURN_HOME_ON_STOP=0` 关闭。自然执行完成后也会默认回到记录的起始位置，可用 `FAIRINO_MASSAGE_RETURN_HOME_ON_COMPLETE=0` 关闭。
 
-运行中力度调整通过同一个控制文件传递，`self.fairino_massage.adjust_force` 会写入一次性 `force_adjust.seq`，执行进程在最近 checkpoint 消费并同步 `force_target_n` 到状态文件。默认步长由 `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N=1.0` 控制，底层目标力会被限制在 `FT_LIVE_FORCE_TARGET_MIN_N` 到 `FT_LIVE_FORCE_TARGET_MAX_N` 范围内。
+运行中力度调整通过同一个控制文件传递，`self.fairino_massage.adjust_force` 会写入一次性 `force_adjust.seq`，执行进程在最近 checkpoint 消费并同步 `force_target_n` 到状态文件。默认步长由 `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N=5.0` 控制，底层目标力会被限制在 `FT_LIVE_FORCE_TARGET_MIN_N` 到 `FT_LIVE_FORCE_TARGET_MAX_N` 范围内。带数值调整时方向优先，`softer + 10` 会按 `-10N` 处理。
 
 ## 状态语义
 
@@ -161,7 +165,7 @@ MCP `detect` 工具返回 `success=true` 只表示检测任务已启动，不表
 | `stopped` | 已停止；自然完成也归一化为停止 | 可重新检测或重新开始 |
 | `error` | 检测或执行异常 | 查看 `last_result` 和日志 |
 
-自然执行完成后外部状态写为 `stopped`，同时 `stage=completed`、`current_action=completed`，`status` 查询会返回 100% 进度。这样 GUI 不会在重启或完成后误显示“仍在运行”。
+自然执行完成后外部状态写为 `stopped`，同时 `stage=completed`、`current_action=completed`，`status` 查询会返回 100% 进度；若自动回位成功，状态中会记录 `stop_home_result.ok=true`。这样 GUI 不会在重启或完成后误显示“仍在运行”。
 
 ## GUI 数据流
 

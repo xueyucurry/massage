@@ -283,6 +283,12 @@ FORCE_FEN_DWELL_S = float(os.environ.get("LASTTIME_FORCE_FEN_DWELL_S", "0.25"))
 DIAN_JIN_REPEAT_COUNT = max(1, int(os.environ.get("FT_DIAN_JIN_REPEAT_COUNT", DIAN_JIN_REPEAT_DEFAULT)))
 FEN_JIN_REPEAT_COUNT = max(1, int(os.environ.get("FT_FEN_JIN_REPEAT_COUNT", FEN_JIN_REPEAT_DEFAULT)))
 FORCE_SHUN_DWELL_S = float(os.environ.get("LASTTIME_FORCE_SHUN_DWELL_S", "0.05"))
+FORCE_SHUN_RECONTACT = os.environ.get("LASTTIME_FORCE_SHUN_RECONTACT", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 FORCE_MONITOR_HZ = float(os.environ.get("LASTTIME_FORCE_MONITOR_HZ", "20.0"))
 FORCE_SENSOR_BUS = int(os.environ.get("LASTTIME_FORCE_SENSOR_BUS", "1"))
 FORCE_ALLOW_SKIP_ZERO = os.environ.get("LASTTIME_FORCE_ALLOW_SKIP_ZERO", "1").strip().lower() in {
@@ -2201,8 +2207,11 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             )
         return True
 
-    def _approach_to_target_force(self, frame, context, split_offset_mm=0.0):
-        offset = -float(self.hover_height_mm)
+    def _approach_to_target_force(self, frame, context, split_offset_mm=0.0, start_offset_mm=None):
+        if start_offset_mm is None:
+            offset = -float(self.hover_height_mm)
+        else:
+            offset = float(start_offset_mm)
         max_offset = max(float(self.force_approach_max_offset_mm), float(FORCE_CONTACT_OFFSET_MM))
         step = max(0.05, abs(float(FORCE_APPROACH_STEP_MM)))
         contact_step = min(step, max(0.05, abs(float(FORCE_APPROACH_CONTACT_STEP_MM))))
@@ -2215,8 +2224,9 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         near_vel = max(1.0, min(fine_vel, abs(float(FORCE_APPROACH_NEAR_VEL))))
         last_print = 0.0
 
+        start_text = "从悬空位沿法向贴近" if start_offset_mm is None else "沿法向补偿贴近"
         print(
-            f"[Force] {context}: 从悬空位沿法向贴近 "
+            f"[Force] {context}: {start_text} "
             f"offset {offset:+.1f}mm -> {max_offset:+.1f}mm, "
             f"target={self._current_force_target_n():.1f}N"
         )
@@ -3643,6 +3653,19 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                             break
                         print(f"    警告：顺筋点{point_no}移动失败，跳过该点继续")
                         continue
+                    if FORCE_SHUN_RECONTACT:
+                        offset, reached = self._approach_to_target_force(
+                            frame,
+                            f"顺筋贴近补偿 点{point_no}",
+                            start_offset_mm=offset,
+                        )
+                        if not reached:
+                            skipped_points.append(point_no)
+                            ok = False
+                            if not FT_CONTINUE_ON_POINT_ERROR:
+                                break
+                            print(f"    警告：顺筋点{point_no}未重新达到目标力，跳过该点继续")
+                            continue
                     offset, hold_ok = self._hold_target_force(
                         frame,
                         0.0,
@@ -3919,6 +3942,7 @@ def main():
             f"release_limit={FORCE_RELEASE_LIMIT_N:.1f}N "
             f"release_timeout={FORCE_RELEASE_TIMEOUT_S:.1f}s "
             f"force_fen={FORCE_FEN_LATERAL_MM:.1f}mm "
+            f"shun_recontact={'on' if FORCE_SHUN_RECONTACT else 'off'} "
             f"guard={'on' if FORCE_GUARD_ENABLE else 'off'}"
         )
     else:

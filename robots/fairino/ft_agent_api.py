@@ -1123,6 +1123,29 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                             break
                         print(f"    警告：顺筋点{point_no}移动失败，跳过该点继续")
                         continue
+                    if getattr(ft, "FORCE_SHUN_RECONTACT", True):
+                        self._set_agent_control_context("shun_jin", "shun_recontact", i)
+                        self._control_checkpoint(
+                            control,
+                            stage="shun_jin",
+                            current_action="shun_recontact",
+                            current_point_index=i,
+                            next_stage="shun_jin",
+                            next_point_index=i,
+                            message=f"顺筋点{point_no}重新贴合目标力",
+                        )
+                        offset, reached = self._approach_to_target_force(
+                            frame,
+                            f"顺筋贴近补偿 点{point_no}",
+                            start_offset_mm=offset,
+                        )
+                        if not reached:
+                            skipped_points.append(point_no)
+                            ok = False
+                            if not ft.FT_CONTINUE_ON_POINT_ERROR:
+                                break
+                            print(f"    警告：顺筋点{point_no}未重新达到目标力，跳过该点继续")
+                            continue
                     offset, hold_ok = self._hold_target_force(
                         frame,
                         0.0,

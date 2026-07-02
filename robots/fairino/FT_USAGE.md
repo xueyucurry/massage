@@ -144,6 +144,8 @@ cd /home/franka/massage
 4. 说“开始按摩”，小智调用 `self.fairino_massage.start`，使用当前保存轨迹执行点筋、分筋、顺筋。
 5. 运行中可以说“暂停按摩”“继续按摩”“停止按摩”“大力一些”“小力一些”“检测状态/按摩状态”。
 
+检测完成后，检测窗口会继续显示保存后的轨迹调试图，不会因为检测子进程返回结果而关闭。窗口会在按摩完成、停止、异常或开启新会话后自动关闭；也可以在窗口中按 `q` 手动关闭。
+
 常用语音意图：
 
 | 语音 | 调用工具 | 行为 |
@@ -152,12 +154,23 @@ cd /home/franka/massage
 | “检测大腿外侧” | `self.fairino_massage.detect` | 检测大腿外侧轨迹 |
 | “检测大腿内侧” | `self.fairino_massage.detect` | 检测大腿内侧轨迹 |
 | “开始按摩” | `self.fairino_massage.start` | 按当前轨迹执行点筋、分筋、顺筋 |
-| “只做顺筋” | `self.fairino_massage.start` | 使用当前轨迹只执行顺筋 |
+| “开始顺筋” / “只做顺筋” / “检查顺筋效果” | `self.fairino_massage.shunjin` | 使用当前轨迹只执行顺筋，不执行点筋和分筋 |
 | “暂停按摩” | `self.fairino_massage.pause` | 在最近安全检查点暂停，回到当前点贴近前的局部悬空位并保存恢复点 |
 | “继续按摩” | `self.fairino_massage.resume` | 从保存的阶段、动作、点位、重复次数和步骤继续 |
 | “停止按摩” | `self.fairino_massage.stop` | 先回当前点局部悬空位，再回记录的起始位置 |
 | “大力一些/小力一些” | `self.fairino_massage.adjust_force` | 在最近控制检查周期增减目标力 |
 | “检测状态/按摩到哪里了” | `self.fairino_massage.status` | 返回当前会话、轨迹、阶段、进度和状态消息 |
+
+力度语音规范：
+
+- “大力一些、加大力度、增大、重一点、用力一点”表示增大目标力。
+- “小力一些、减轻力度、减小、降低、轻一点、弱一点”表示减小目标力。
+- 说具体数值时，数值只表示幅度，方向由语义决定。例如“减轻 10N”会按 `-10N` 处理，“增大 10N”会按 `+10N` 处理。
+
+读音规范：
+
+- “膀胱经”的标准读音是 `páng guāng jīng`，不是 `bang guang jing`。
+- 由于部分 TTS 会把多音字“膀”读错，语音播报中默认使用同音的“旁光经”作为口播安全词；界面和轨迹文件仍保留正式名称“膀胱经”。
 
 状态含义：
 
@@ -185,7 +198,7 @@ cd /home/franka/massage
    - 点筋动作：默认已替换为小幅分筋。从悬空位沿局部法向贴近，达到目标力后沿分筋轴做小幅正向、反向、回中心移动，默认每个点执行 3 次。
    - 分筋：贴近到目标力后，沿分筋轴正向、反向、回中心移动并保压，默认每个点执行 3 轮。
 6. 回到顺筋起点。
-7. 执行顺筋：沿采样点序列移动，并在每个点做目标力微调保压。
+7. 执行顺筋：沿采样点序列移动，每到一个点都会先按目标力重新贴合，再做目标力微调保压。
 8. 返回安全位置。
 9. 关闭力控通道。
 
@@ -299,9 +312,11 @@ JSON 主要字段：
 | `MASSAGE_HOME_ON_GUI_START` | `1` | `./massage gui` 启动前是否回记录位 |
 | `MASSAGE_HOME_MOVE_VEL` | `20` | 回记录位速度 |
 | `MASSAGE_HOME_SAFE_Z_MM` | `300` | 回记录位过程中的安全高度 |
-| `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N` | `1.0` | 语音“大力/小力”默认每次增减的力，单位 N |
+| `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N` | `5.0` | 语音“大力/小力”默认每次增减的力，单位 N |
 | `FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE` | `1` | 检测完成后是否请求小智自动查询状态并播报 |
+| `FAIRINO_MASSAGE_KEEP_DETECTION_WINDOW` | `1` | 检测完成后是否保留轨迹检测窗口直到按摩结束、停止或异常 |
 | `FAIRINO_MASSAGE_RETURN_HOME_ON_STOP` | `1` | 语音停止按摩后是否回记录的起始位置 |
+| `FAIRINO_MASSAGE_RETURN_HOME_ON_COMPLETE` | `1` | 语音按摩自然完成后是否回记录的起始位置 |
 | `FAIRINO_MASSAGE_STOP_WAIT_S` | `20` | 停止时等待按摩执行进程正常退出的时间 |
 
 语音智能体默认状态文件为 `robots/fairino/ft_agent_state/current_session.json`，控制文件为 `robots/fairino/ft_agent_state/current_control.json`。GUI 读取状态文件时支持用 `FT_AGENT_STATE_FILE` 临时覆盖；MCP runtime 默认使用上述固定路径。
@@ -367,6 +382,7 @@ JSON 主要字段：
 | `LASTTIME_FORCE_APPROACH_NEAR_STEP_MM` | `0.3` | 更接近目标力时的近端步长；启动脚本默认覆盖为 `0.5` |
 | `LASTTIME_FORCE_HOLD_KP_MM_PER_N` | `0.04` | 保压微调比例；启动脚本默认覆盖为 `0.02` |
 | `LASTTIME_FORCE_HOLD_MAX_STEP_MM` | `0.15` | 单次保压微调最大位移；启动脚本默认覆盖为 `0.08` |
+| `LASTTIME_FORCE_SHUN_RECONTACT` | `1` | 顺筋每个轨迹点是否按目标力重新贴合，避免末端点悬空 |
 | `LASTTIME_FORCE_RELEASE_LIMIT_N` | `5.0` | 回悬空位后的卸力判定阈值 |
 | `FT_LIVE_FORCE_TARGET_MIN_N` | `1.0` | 运行中语音调整目标力的下限 |
 | `FT_LIVE_FORCE_TARGET_MAX_N` | `80.0` | 运行中语音调整目标力的上限 |

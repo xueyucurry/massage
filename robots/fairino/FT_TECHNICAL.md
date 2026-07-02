@@ -118,7 +118,7 @@
 | `self.fairino_massage.pause` | 写 `current_control.json` 的 `request=pause`，执行进程在 checkpoint 消费 |
 | `self.fairino_massage.resume` / `continue` / `resume_massage` | 从状态中的 `resume_*` 字段构造执行子进程启动参数 |
 | `self.fairino_massage.stop` | 写 `request=stop`，等待执行进程退出，然后调用 `./massage home` |
-| `self.fairino_massage.adjust_force` | 写一次性 `force_adjust.seq` 和 `delta_n`，执行进程在 checkpoint 消费 |
+| `self.fairino_massage.adjust_force` | 写一次性 `force_adjust.seq` 和 `delta_n`，执行进程在 checkpoint 消费；方向由 `direction` 归一化，`softer + 10` 会落成 `-10N` |
 | `self.fairino_massage.status` | 从状态文件读取会话、轨迹、进度和机械臂位姿 |
 
 检测工具默认 `display=True`，因此会保留 `ft.py` 检测画面。MCP `detect` 返回成功只表示检测任务已经启动；检测真正完成后，后台线程写 `status=detected` 和 `trajectory_path`。默认 `FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE=1` 时，运行时会向小智发起内部状态查询请求，要求小智调用 `self.fairino_massage.status` 并播报检测完成。
@@ -412,10 +412,11 @@ offset += delta_mm
 `execute_shun_jin(frames)`：
 
 1. 从候选点中寻找第一个能贴近到目标力的起点。
-2. 沿后续采样点逐点移动，保持上一次贴近 offset。
-3. 每个点保压 `LASTTIME_FORCE_SHUN_DWELL_S`。
-4. 失败点按 `FT_CONTINUE_ON_POINT_ERROR` 决定跳过或终止。
-5. 结束后回到最后悬空位。
+2. 沿后续采样点逐点移动，保持上一次贴近 offset 作为初值。
+3. 默认每个点通过 `LASTTIME_FORCE_SHUN_RECONTACT=1` 重新沿法向贴近到目标力，避免身体曲面变化导致后段悬空。
+4. 每个点保压 `LASTTIME_FORCE_SHUN_DWELL_S`。
+5. 失败点按 `FT_CONTINUE_ON_POINT_ERROR` 决定跳过或终止。
+6. 结束后回到最后悬空位。
 
 非力控分支只沿各点悬空位移动。
 
@@ -479,7 +480,7 @@ robots/fairino/ft_agent_state/current_control.json
 - `request=continue`：继续执行。
 - `request=pause`：如果当前点可安全暂停，退回局部悬空位并写 `paused`；如果暂不可暂停，标记为 pending，直到下一个安全点。
 - `request=stop`：退回局部悬空位，返回 `stopped`。
-- `force_adjust`：按 `delta_n` 更新目标力，受 `FT_LIVE_FORCE_TARGET_MIN_N` 和 `FT_LIVE_FORCE_TARGET_MAX_N` 限制。
+- `force_adjust`：按归一化后的 `delta_n` 更新目标力，受 `FT_LIVE_FORCE_TARGET_MIN_N` 和 `FT_LIVE_FORCE_TARGET_MAX_N` 限制。语音层传入的数值先按 `direction` 解释，避免“减轻 10N”被误当成 `+10N`。
 
 暂停恢复粒度已经细化到点位、动作、重复次数和步骤。点筋完成一次后暂停，恢复时会从下一次点筋开始；分筋同理。顺筋当前只有一条顺序轨迹，恢复时从保存的点位继续。
 

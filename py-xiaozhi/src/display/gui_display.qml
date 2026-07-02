@@ -719,10 +719,10 @@ Rectangle {
                         id: quickDetectBack
                         Layout.preferredWidth: 112
                         Layout.preferredHeight: 30
-                        text: "检测膀胱经"
+                        text: "检测旁光经"
                         background: Rectangle { color: quickDetectBack.pressed ? "#d7f0eb" : (quickDetectBack.hovered ? "#e8f8f4" : "#eef8f5"); radius: 8; border.color: "#bfe5db" }
                         contentItem: Text { text: quickDetectBack.text; font.pixelSize: 12; color: "#0b6b5e"; font.family: "PingFang SC, Microsoft YaHei UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        onClicked: root.quickCommand("检测膀胱经")
+                        onClicked: root.quickCommand("检测旁光经")
                     }
 
                     Button {

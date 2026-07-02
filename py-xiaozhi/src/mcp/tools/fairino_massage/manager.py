@@ -9,6 +9,7 @@ from .tools import (
     pause_massage,
     resume_massage,
     start_massage,
+    start_shun_jin,
     stop_massage,
 )
 
@@ -32,12 +33,13 @@ class FairinoMassageToolsManager:
             add_tool(
                 (
                     "self.fairino_massage.detect",
-                    "【FAIRINO经络检测】用户说“检测膀胱经、进行膀胱经检测、检测背部、检测大腿外侧、检测大腿内侧、重新检测轨迹”时必须调用本工具。"
+                    "【FAIRINO经络检测】用户说“检测背部经络、检测旁光经、进行背部检测、检测大腿外侧、检测大腿内侧、重新检测轨迹”时必须调用本工具。"
+                    "语音播报限制：涉及背部经络时一律口播“旁光经”，不要使用其他写法，避免TTS读错。"
                     "功能：后台启动经络/部位检测，默认打开检测画面，检测稳定后保存轨迹并记录当前会话。"
                     "检测成功保存轨迹后，客户端会自动请求小智调用 self.fairino_massage.status 检查检测状态，并播报检测完成和轨迹保存结果。"
                     "工具返回 success=true 仅表示检测任务已启动；应回复用户正在检测，不要判定为失败。"
                     "用户追问检测好了没有、检测状态、轨迹保存了吗时必须调用 self.fairino_massage.status，不要凭记忆回答。"
-                    "target 可取 back(背部膀胱经)、leg(大腿外侧)、leg_inner(大腿内侧)。",
+                    "target 可取 back(背部旁光经)、leg(大腿外侧)、leg_inner(大腿内侧)。",
                     detect_props,
                     detect_meridian,
                 )
@@ -53,12 +55,38 @@ class FairinoMassageToolsManager:
             add_tool(
                 (
                     "self.fairino_massage.start",
-                    "【FAIRINO开始按摩】用户说“开始按摩、开始全套按摩、开始点筋、开始分筋、开始顺筋”时必须调用本工具。"
+                    "【FAIRINO开始按摩】用户说“开始按摩、开始全套按摩、开始点筋、开始分筋”时必须调用本工具。"
+                    "如果用户明确说“开始顺筋、只做顺筋、只执行顺筋、顺筋测试、检查顺筋效果”，必须优先调用 self.fairino_massage.shunjin，不要用 all。"
                     "不要只用自然语言回复进度；只有工具返回后才能告诉用户是否已启动。"
                     "功能：使用当前已检测保存的轨迹，后台执行点筋/分筋/顺筋。"
                     "actions 可取 all 或 dian_jin,fen_jin,shun_jin 的逗号组合；无 trajectory_path 时使用当前会话轨迹。",
                     start_props,
                     start_massage,
+                )
+            )
+
+            shun_props = PropertyList(
+                [
+                    Property("target", PropertyType.STRING, default_value="auto"),
+                    Property("trajectory_path", PropertyType.STRING, default_value=""),
+                ]
+            )
+            add_tool(
+                (
+                    "self.fairino_massage.shunjin",
+                    "【FAIRINO只执行顺筋】用户说“开始顺筋、只做顺筋、只执行顺筋、单独顺筋、顺筋测试、检查顺筋、检查顺筋效果、测试顺筋贴合”时必须调用本工具。"
+                    "功能：使用当前已检测保存的轨迹，只执行 shun_jin 顺筋动作，不执行点筋和分筋，方便检查顺筋末端是否贴合人体。"
+                    "无 trajectory_path 时使用当前会话轨迹；如果没有已保存轨迹，工具会返回失败并提示先检测。",
+                    shun_props,
+                    start_shun_jin,
+                )
+            )
+            add_tool(
+                (
+                    "self.fairino_massage.shun_jin",
+                    "【FAIRINO只执行顺筋别名】与 self.fairino_massage.shunjin 相同。用户要求只做顺筋或检查顺筋贴合时调用本工具。",
+                    shun_props,
+                    start_shun_jin,
                 )
             )
 
@@ -71,10 +99,11 @@ class FairinoMassageToolsManager:
             add_tool(
                 (
                     "self.fairino_massage.adjust_force",
-                    "【FAIRINO运行中调整力度】用户在按摩已经开始后说“大力一些、加大力度、重一点、用力一点、小力一些、减小力度、轻一点”时必须调用本工具。"
+                    "【FAIRINO运行中调整力度】用户在按摩已经开始后说“大力一些、加大力度、重一点、用力一点、小力一些、减轻力度、减小力度、轻一点、弱一点”时必须调用本工具。"
                     "不要调用 start/pause/resume/status 代替；本工具不会中断按摩，只请求当前执行器在最近控制检查周期调整目标力。"
-                    "direction 可取 stronger/increase 表示增大，softer/decrease 表示减小；默认每次调整 1N。"
-                    "delta_n 可选，正数增大、负数减小；用户只说大力/小力时不要改 delta_n。",
+                    "必须严格区分方向：用户说大力、加大、增大、重一点、用力一点时 direction=stronger；用户说小力、减轻、减小、降低、轻一点、弱一点时 direction=softer。"
+                    "用户明确说数值时，delta_n 填绝对值正数，方向仍由 direction 决定：例如“减轻10N”必须传 direction=softer, delta_n=10；“增大10N”必须传 direction=stronger, delta_n=10。"
+                    "不要因为 delta_n 是正数就理解为增大；不要把减轻/降低/小力传成 stronger。用户只说大力/小力且没说数值时不要填 delta_n，默认每次调整 5N。",
                     adjust_force_props,
                     adjust_force,
                 )
@@ -137,6 +166,7 @@ class FairinoMassageToolsManager:
                     "self.fairino_massage.status",
                     "【FAIRINO检测/按摩状态】用户询问“检测状态、检测好了没有、轨迹保存了吗、按摩状态、现在到哪里了、是否暂停、当前轨迹”时必须调用本工具。"
                     "必须以工具返回的 status/stage/current_point_index/progress 为准，不能编造进度。"
+                    "语音播报限制：如果涉及背部经络，一律口播“旁光经”，不要使用其他写法。"
                     "功能：返回当前会话、轨迹、动作阶段、点位进度、机械臂位姿和状态文件路径。",
                     PropertyList([]),
                     get_status,

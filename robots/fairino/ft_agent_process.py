@@ -267,6 +267,123 @@ def run_detect(args):
             pass
 
 
+def _trajectory_debug_image_path(result):
+    trajectory = result.get("trajectory") if isinstance(result, dict) else {}
+    trajectory_path = trajectory.get("trajectory_path") if isinstance(trajectory, dict) else None
+    if not trajectory_path:
+        return None
+
+    trajectory_json = Path(trajectory_path)
+    data = _read_json(trajectory_json, {}) or {}
+    debug_image = data.get("debug_image")
+    if debug_image:
+        return Path(debug_image)
+
+    candidate = trajectory_json.with_suffix(".png")
+    return candidate if candidate.exists() else None
+
+
+def _state_says_preview_done(state_path, session_id):
+    if not state_path:
+        return False
+    state = _read_json(state_path, {}) or {}
+    state_session_id = state.get("session_id")
+    if state_session_id and state_session_id != session_id:
+        return True
+    status = str(state.get("status") or "").strip().lower()
+    return status in {"idle", "stopped", "completed", "error"}
+
+
+def hold_detection_preview(args, result):
+    if not (args.display and args.keep_display and result.get("ok")):
+        return
+    if not args.state_path:
+        return
+
+    try:
+        import cv2
+        import numpy as np
+    except Exception as exc:
+        print(f"[Preview] OpenCV not available, skip persistent detection preview: {exc}", flush=True)
+        return
+
+    image_path = _trajectory_debug_image_path(result)
+    image = None
+    if image_path is not None:
+        image = cv2.imread(str(image_path))
+
+    if image is None:
+        image = np.full((720, 960, 3), 245, dtype=np.uint8)
+        cv2.putText(
+            image,
+            "Trajectory saved",
+            (40, 90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (20, 80, 20),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            str((result.get("trajectory") or {}).get("trajectory_path") or ""),
+            (40, 140),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (60, 60, 60),
+            1,
+            cv2.LINE_AA,
+        )
+
+    window_name = "Detection"
+    try:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    except Exception:
+        pass
+
+    print("[Preview] 检测轨迹窗口保持显示，按摩结束/停止/异常后自动关闭。", flush=True)
+    try:
+        while True:
+            frame = image.copy()
+            state = _read_json(args.state_path, {}) or {}
+            status = str(state.get("status") or "detecting")
+            message = str(state.get("message") or "")
+            banner = f"status={status}  press q to close"
+            cv2.rectangle(frame, (0, 0), (frame.shape[1], 42), (245, 245, 245), -1)
+            cv2.putText(
+                frame,
+                banner[:120],
+                (16, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 120, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            if message:
+                cv2.putText(
+                    frame,
+                    message[:80],
+                    (16, frame.shape[0] - 18),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (60, 60, 60),
+                    1,
+                    cv2.LINE_AA,
+                )
+            cv2.imshow(window_name, frame)
+            key = cv2.waitKey(250) & 0xFF
+            if key == ord("q"):
+                break
+            if _state_says_preview_done(args.state_path, args.session_id):
+                break
+    finally:
+        try:
+            cv2.destroyWindow(window_name)
+        except Exception:
+            pass
+
+
 def run_execute(args):
     target = args.target
     if target == "auto":
@@ -415,6 +532,8 @@ def build_parser():
     detect.add_argument("--stable-frames", type=int, default=None)
     detect.add_argument("--no-save", action="store_true")
     detect.add_argument("--result-path", required=True)
+    detect.add_argument("--state-path", default="")
+    detect.add_argument("--keep-display", action="store_true")
 
     execute = sub.add_parser("execute")
     execute.add_argument("--session-id", required=True)
@@ -440,6 +559,9 @@ def main(argv=None):
 
     if args.command == "detect":
         result = run_detect(args)
+        _write_result(args.result_path, result)
+        hold_detection_preview(args, result)
+        return 0
     elif args.command == "execute":
         result = run_execute(args)
     else:

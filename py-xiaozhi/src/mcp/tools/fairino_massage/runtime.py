@@ -26,7 +26,43 @@ DETECT_RUNNER = FAIRINO_DIR / "run_ft_agent_process_env.sh"
 EXECUTE_RUNNER = FAIRINO_DIR / "run_ft_agent_process_ros2.sh"
 MASSAGE_CLI = PROJECT_ROOT / "massage"
 MASSAGE_ACTION_SEQUENCE = ("dian_jin", "fen_jin", "shun_jin")
-FORCE_ADJUST_STEP_N = float(os.environ.get("FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N", "1.0"))
+FORCE_ADJUST_STEP_N = float(os.environ.get("FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N", "5.0"))
+FORCE_INCREASE_DIRECTIONS = {
+    "stronger",
+    "increase",
+    "up",
+    "more",
+    "harder",
+    "heavier",
+    "大力",
+    "大力一些",
+    "加力",
+    "加大",
+    "增大",
+    "增加",
+    "重一点",
+    "用力一点",
+}
+FORCE_DECREASE_DIRECTIONS = {
+    "softer",
+    "decrease",
+    "down",
+    "less",
+    "lighter",
+    "weaker",
+    "小力",
+    "小力一些",
+    "减力",
+    "减小",
+    "减轻",
+    "降低",
+    "轻一点",
+    "弱一点",
+}
+BLADDER_MERIDIAN_SPEECH_TEXT = os.environ.get(
+    "FAIRINO_MASSAGE_BLADDER_MERIDIAN_SPEECH_TEXT",
+    "旁光经",
+)
 
 _runtime = None
 
@@ -62,6 +98,13 @@ def _env_enabled(name: str, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _speech_safe_label(label: str) -> str:
+    text = str(label or "")
+    if not _env_enabled("FAIRINO_MASSAGE_TTS_SAFE_BLADDER_MERIDIAN", True):
+        return text
+    return text.replace("膀胱经", BLADDER_MERIDIAN_SPEECH_TEXT).replace("膀胱", "旁光")
+
+
 def _schedule_xiaozhi_detect_status_check(target_label: str) -> bool:
     try:
         from src.application import Application
@@ -95,9 +138,11 @@ def _schedule_xiaozhi_detect_status_check(target_label: str) -> bool:
                 pass
 
             label = target_label or "经络"
+            speech_label = _speech_safe_label(label)
             prompt = (
                 "请检查当前FAIRINO检测状态，必须调用 self.fairino_massage.status。"
-                f"如果工具返回 status=detected 且 trajectory_saved=true，请播报“{label}检测已完成，轨迹已保存”。"
+                "语音播报时涉及背部经络，一律口播“旁光经”，不要改成其他写法。"
+                f"如果工具返回 status=detected 且 trajectory_saved=true，请播报“{speech_label}检测已完成，轨迹已保存”。"
                 "不要开始按摩，不要调用开始、暂停、继续或停止工具。"
             )
             await app.protocol.send_wake_word_detected(prompt)
@@ -106,7 +151,10 @@ def _schedule_xiaozhi_detect_status_check(target_label: str) -> bool:
             logger.error(f"请求小智自动检查检测状态失败: {exc}", exc_info=True)
             try:
                 if hasattr(app, "set_chat_message"):
-                    app.set_chat_message("assistant", f"{target_label or '经络'}检测已完成，轨迹已保存")
+                    app.set_chat_message(
+                        "assistant",
+                        f"{_speech_safe_label(target_label or '经络')}检测已完成，轨迹已保存",
+                    )
             except Exception:
                 pass
 
@@ -174,38 +222,28 @@ def _normalize_massage_actions(actions=None) -> List[str]:
     return [action for action in MASSAGE_ACTION_SEQUENCE if action in requested]
 
 
-def _normalize_force_delta(direction: str = "", delta_n: Optional[float] = None) -> float:
-    if delta_n not in (None, "", 0, "0"):
-        return float(delta_n)
-
+def _normalize_force_direction(direction: str = "") -> Optional[int]:
     text = str(direction or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if text in {
-        "",
-        "stronger",
-        "increase",
-        "up",
-        "more",
-        "harder",
-        "heavier",
-        "大力",
-        "大力一些",
-        "加力",
-        "加大",
-        "增大",
-    }:
+    if text in FORCE_INCREASE_DIRECTIONS:
+        return 1
+    if text in FORCE_DECREASE_DIRECTIONS:
+        return -1
+    return None
+
+
+def _normalize_force_delta(direction: str = "", delta_n: Optional[float] = None) -> float:
+    direction_sign = _normalize_force_direction(direction)
+    if delta_n not in (None, "", 0, "0"):
+        value = float(delta_n)
+        if direction_sign is not None:
+            return float(direction_sign) * abs(value)
+        return value
+
+    if str(direction or "").strip() == "":
         return abs(float(FORCE_ADJUST_STEP_N))
-    if text in {
-        "softer",
-        "decrease",
-        "down",
-        "less",
-        "lighter",
-        "小力",
-        "小力一些",
-        "减力",
-        "减小",
-        "降低",
-    }:
+    if direction_sign == 1:
+        return abs(float(FORCE_ADJUST_STEP_N))
+    if direction_sign == -1:
         return -abs(float(FORCE_ADJUST_STEP_N))
     raise ValueError("direction 必须是 stronger/increase 或 softer/decrease")
 
@@ -297,43 +335,49 @@ def _massage_progress_percent(state: Dict[str, Any]) -> Optional[int]:
 def _status_summary(state: Dict[str, Any]) -> str:
     status = state.get("status") or "idle"
     label = state.get("target_label") or state.get("target") or "当前部位"
+    speech_label = _speech_safe_label(label)
     trajectory_path = state.get("trajectory_path")
     point_count = int(state.get("point_count") or 0)
     progress = _massage_progress_percent(state)
 
     if status == "detecting":
-        return f"{label}正在检测中，轨迹尚未保存；请查看检测画面，检测稳定后会自动保存轨迹。"
+        return f"{speech_label}正在检测中，轨迹尚未保存；请查看检测画面，检测稳定后会自动保存轨迹。"
     if status == "detected":
         force_text = ""
         if state.get("force_target_n") is not None:
             force_text = f"目标力度={float(state.get('force_target_n')):.1f}N；"
-        return f"{label}检测已完成，轨迹已保存，共 {point_count} 个点；{force_text}尚未开始按摩。轨迹文件：{trajectory_path}"
+        return f"{speech_label}检测已完成，轨迹已保存，共 {point_count} 个点；{force_text}尚未开始按摩。轨迹文件：{trajectory_path}"
     if status == "running":
         force_text = ""
         if state.get("force_target_n") is not None:
             force_text = f"，目标力度={float(state.get('force_target_n')):.1f}N"
         return (
-            f"{label}按摩正在执行，阶段={state.get('stage')}，动作={state.get('current_action')}，"
+            f"{speech_label}按摩正在执行，阶段={state.get('stage')}，动作={state.get('current_action')}，"
             f"点位={int(state.get('current_point_index') or 0)}/{point_count}，进度={progress}%{force_text}"
         )
     if status == "pausing":
-        return f"{label}已收到暂停请求，正在等待最近安全检查点；当前动作={state.get('current_action')}。"
+        return f"{speech_label}已收到暂停请求，正在等待最近安全检查点；当前动作={state.get('current_action')}。"
     if status == "paused":
         return (
-            f"{label}按摩已暂停，可继续；恢复点 stage={state.get('resume_stage')}，"
+            f"{speech_label}按摩已暂停，可继续；恢复点 stage={state.get('resume_stage')}，"
             f"action={_infer_resume_action(state)}，point_index={state.get('resume_point_index')}，"
             f"repeat_index={_infer_resume_repeat_index(state)}，step_index={_infer_resume_step_index(state)}。"
         )
     if status == "stopping":
-        return f"{label}正在停止，等待执行器退出。"
+        if state.get("stage") == "completed" and state.get("current_action") == "return_home":
+            return f"{speech_label}按摩已完成，机械臂正在回到起始位置。"
+        return f"{speech_label}正在停止，等待执行器退出。"
     if status == "stopped":
         if state.get("stage") == "completed" or state.get("current_action") == "completed":
-            return f"{label}按摩已完成并停止，进度=100%。"
-        return f"{label}按摩已停止。"
+            home_result = state.get("stop_home_result") or {}
+            if home_result.get("ok"):
+                return f"{speech_label}按摩已完成并停止，机械臂已回到起始位置，进度=100%。"
+            return f"{speech_label}按摩已完成并停止，进度=100%。"
+        return f"{speech_label}按摩已停止。"
     if status == "completed":
-        return f"{label}按摩已完成，进度=100%。"
+        return f"{speech_label}按摩已完成，进度=100%。"
     if status == "error":
-        return f"{label}任务异常：{state.get('message') or '未知错误'}。"
+        return f"{speech_label}任务异常：{state.get('message') or '未知错误'}。"
     return "当前没有正在执行的检测或按摩任务。"
 
 
@@ -377,6 +421,7 @@ class FairinoMassageRuntime:
         self._lock = threading.RLock()
         self._worker_thread: Optional[threading.Thread] = None
         self._worker_process: Optional[subprocess.Popen] = None
+        self._detect_display_process: Optional[subprocess.Popen] = None
         self._state = self._load_state()
 
     def _load_state(self) -> Dict[str, Any]:
@@ -458,6 +503,20 @@ class FairinoMassageRuntime:
         if self._worker_process is not None and self._worker_process.poll() is None:
             return True
         return _pid_alive(self._state.get("worker_pid"))
+
+    def _cleanup_detect_display_process_unlocked(self):
+        proc = self._detect_display_process
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            except Exception as exc:
+                logger.warning(f"[FairinoMassage] failed to stop detect display process: {exc}")
+        self._detect_display_process = None
 
     def _wait_worker_stopped(self, timeout_s: float) -> bool:
         deadline = time.time() + max(0.0, float(timeout_s))
@@ -546,6 +605,7 @@ class FairinoMassageRuntime:
                     "message": "已有检测或按摩任务正在执行",
                     "state": self._state_copy_unlocked(),
                 }
+            self._cleanup_detect_display_process_unlocked()
             session_id = _new_session_id()
             self._state.update(
                 _empty_state(),
@@ -611,6 +671,8 @@ class FairinoMassageRuntime:
             ]
             if display:
                 cmd.append("--display")
+                if _env_enabled("FAIRINO_MASSAGE_KEEP_DETECTION_WINDOW", True):
+                    cmd.extend(["--state-path", str(self.state_path), "--keep-display"])
             if timeout_s is not None:
                 cmd.extend(["--timeout-s", str(float(timeout_s))])
             if stable_frames is not None:
@@ -622,24 +684,51 @@ class FairinoMassageRuntime:
             if timeout_s is not None:
                 timeout = max(60.0, float(timeout_s) + 60.0)
 
-            completed = subprocess.run(
-                cmd,
-                cwd=str(FAIRINO_DIR),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-            log_path.write_text(completed.stdout or "", encoding="utf-8")
+            with log_path.open("w", encoding="utf-8") as log_file:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(FAIRINO_DIR),
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+
+                deadline = None if timeout is None else time.monotonic() + float(timeout)
+                while not result_path.exists():
+                    returncode = proc.poll()
+                    if returncode is not None:
+                        break
+                    if deadline is not None and time.monotonic() > deadline:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3.0)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise subprocess.TimeoutExpired(cmd, timeout)
+                    time.sleep(0.2)
+
+                completed_returncode = proc.poll()
+                keep_display_alive = bool(display and _env_enabled("FAIRINO_MASSAGE_KEEP_DETECTION_WINDOW", True))
+                if result_path.exists() and proc.poll() is None:
+                    if keep_display_alive:
+                        with self._lock:
+                            self._detect_display_process = proc
+                    else:
+                        try:
+                            proc.wait(timeout=2.0)
+                            completed_returncode = proc.returncode
+                        except subprocess.TimeoutExpired:
+                            proc.terminate()
+                            completed_returncode = proc.poll()
+
             if not result_path.exists():
                 state = self._update_state(
                     status="error",
                     message="机器人检测进程没有返回结果",
                     last_result={
                         "error": "missing result file",
-                        "returncode": completed.returncode,
+                        "returncode": completed_returncode,
                         "log_path": str(log_path),
                         "log_tail": self._read_log_tail(log_path),
                     },
@@ -651,8 +740,8 @@ class FairinoMassageRuntime:
                 }
 
             result = self._read_result_file(result_path)
-            if completed.returncode != 0 and result.get("ok"):
-                result["process_returncode"] = completed.returncode
+            if completed_returncode not in (None, 0) and result.get("ok"):
+                result["process_returncode"] = completed_returncode
                 result["log_path"] = str(log_path)
             result = _jsonable(result)
             if result.get("ok"):
@@ -1049,8 +1138,44 @@ class FairinoMassageRuntime:
                     last_result=result,
                 )
             elif result.get("ok"):
+                home_result = None
+                result_for_state = _jsonable(result)
+                if _env_enabled("FAIRINO_MASSAGE_RETURN_HOME_ON_COMPLETE", True):
+                    self._update_state(
+                        status="stopping",
+                        stage="completed",
+                        current_action="return_home",
+                        current_point_index=0,
+                        current_repeat_index=0,
+                        current_step_index=0,
+                        resume_stage=None,
+                        resume_point_index=0,
+                        resume_action=None,
+                        resume_repeat_index=0,
+                        resume_step_index=0,
+                        message="按摩动作执行完成，正在回到起始位置",
+                        last_result=result_for_state,
+                    )
+                    try:
+                        home_result = self._return_robot_home()
+                    except Exception as exc:
+                        home_result = {
+                            "ok": False,
+                            "message": f"机械臂回起始位置异常: {exc}",
+                            "traceback": traceback.format_exc(),
+                        }
+                    result_for_state["completion_home_result"] = _jsonable(home_result)
+
+                home_ok = home_result is None or bool(home_result.get("ok"))
+                message = (
+                    "按摩动作执行完成，机械臂已回到起始位置"
+                    if home_result is not None and home_ok
+                    else "按摩动作执行完成，任务已停止"
+                )
+                if home_result is not None and not home_ok:
+                    message = home_result.get("message") or "按摩动作执行完成，但机械臂回起始位置失败"
                 self._update_state(
-                    status="stopped",
+                    status="stopped" if home_ok else "error",
                     stage="completed",
                     current_action="completed",
                     current_point_index=0,
@@ -1061,8 +1186,9 @@ class FairinoMassageRuntime:
                     resume_action=None,
                     resume_repeat_index=0,
                     resume_step_index=0,
-                    message="按摩动作执行完成，任务已停止",
-                    last_result=result,
+                    message=message,
+                    last_result=result_for_state,
+                    stop_home_result=home_result,
                 )
             else:
                 self._update_state(
