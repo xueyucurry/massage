@@ -36,6 +36,7 @@ class ConfigManager:
             "KEYWORDS_SCORE": 1.8,
             "KEYWORDS_THRESHOLD": 0.2,
             "NUM_TRAILING_BLANKS": 1,
+            "KEEP_LISTENING_AFTER_WAKE_WORD": False,
         },
         "CAMERA": {
             "camera_index": 0,

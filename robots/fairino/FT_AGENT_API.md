@@ -117,7 +117,7 @@ python3 ft_agent_api.py execute \
 | `self.fairino_massage.start` | “开始按摩”、“开始全套按摩” | 使用当前轨迹后台执行动作 |
 | `self.fairino_massage.shunjin` | “只做顺筋”、“检查顺筋效果” | 使用当前轨迹只执行顺筋，不执行点筋和分筋 |
 | `self.fairino_massage.shun_jin` | “单独顺筋”、“测试顺筋贴合” | `shunjin` 的别名 |
-| `self.fairino_massage.adjust_force` | “大力一些”、“小力一些” | 按摩运行中调整目标力度；默认每次增减 5N，不中断当前按摩 |
+| `self.fairino_massage.adjust_force` | “大力一些”、“小力一些” | 按摩运行中实时调整目标力度；暂停期间保存新目标力，继续后生效；默认每次增减 5N |
 | `self.fairino_massage.pause` | “暂停按摩” | 在最近安全检查点暂停并保存状态 |
 | `self.fairino_massage.resume` | “继续按摩” | 从上次暂停点继续 |
 | `self.fairino_massage.continue` | “接着按摩”、“恢复按摩” | `resume` 的别名 |
@@ -149,7 +149,7 @@ MCP `detect` 工具返回 `success=true` 只表示检测任务已启动，不表
 
 停止按摩会先请求执行进程停止并回到当前点局部悬空位，随后通过顶层 `./massage home` 回到 `massage_home_pose.json` 记录的起始位置。这个回位流程可以用 `FAIRINO_MASSAGE_RETURN_HOME_ON_STOP=0` 关闭。自然执行完成后也会默认回到记录的起始位置，可用 `FAIRINO_MASSAGE_RETURN_HOME_ON_COMPLETE=0` 关闭。
 
-运行中力度调整通过同一个控制文件传递，`self.fairino_massage.adjust_force` 会写入一次性 `force_adjust.seq`，执行进程在最近 checkpoint 消费并同步 `force_target_n` 到状态文件。默认步长由 `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N=5.0` 控制，底层目标力会被限制在 `FT_LIVE_FORCE_TARGET_MIN_N` 到 `FT_LIVE_FORCE_TARGET_MAX_N` 范围内。带数值调整时方向优先，`softer + 10` 会按 `-10N` 处理。
+运行中力度调整通过同一个控制文件传递，`self.fairino_massage.adjust_force` 会写入一次性 `force_adjust.seq`，执行进程在最近 checkpoint 消费并同步 `force_target_n` 到状态文件。暂停期间执行线程已经退出，`adjust_force` 会直接更新会话状态里的 `force_target_n`，`resume` 会把这个目标力作为 `--force-target-n` 传给下一次执行进程。默认步长由 `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N=5.0` 控制，底层目标力会被限制在 `FT_LIVE_FORCE_TARGET_MIN_N` 到 `FT_LIVE_FORCE_TARGET_MAX_N` 范围内。带数值调整时方向优先，`softer + 10` 会按 `-10N` 处理。
 
 ## 状态语义
 

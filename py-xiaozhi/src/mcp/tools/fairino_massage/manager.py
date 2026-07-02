@@ -99,8 +99,8 @@ class FairinoMassageToolsManager:
             add_tool(
                 (
                     "self.fairino_massage.adjust_force",
-                    "【FAIRINO运行中调整力度】用户在按摩已经开始后说“大力一些、加大力度、重一点、用力一点、小力一些、减轻力度、减小力度、轻一点、弱一点”时必须调用本工具。"
-                    "不要调用 start/pause/resume/status 代替；本工具不会中断按摩，只请求当前执行器在最近控制检查周期调整目标力。"
+                    "【FAIRINO调整按摩力度】用户在按摩已经开始或按摩已经暂停后说“大力一些、加大力度、重一点、用力一点、小力一些、减轻力度、减小力度、轻一点、弱一点”时必须调用本工具。"
+                    "不要调用 start/pause/resume/status 代替；运行中本工具会请求当前执行器在最近控制检查周期调整目标力，暂停期间会保存新的目标力并在继续按摩后生效。"
                     "必须严格区分方向：用户说大力、加大、增大、重一点、用力一点时 direction=stronger；用户说小力、减轻、减小、降低、轻一点、弱一点时 direction=softer。"
                     "用户明确说数值时，delta_n 填绝对值正数，方向仍由 direction 决定：例如“减轻10N”必须传 direction=softer, delta_n=10；“增大10N”必须传 direction=stronger, delta_n=10。"
                     "不要因为 delta_n 是正数就理解为增大；不要把减轻/降低/小力传成 stronger。用户只说大力/小力且没说数值时不要填 delta_n，默认每次调整 5N。",

@@ -226,6 +226,23 @@ class Application:
         except Exception:
             pass
 
+    async def start_wake_word_conversation(self) -> None:
+        """唤醒词触发的一次性自动对话。
+
+        与界面“自动对话”不同，这里不保持持续监听；完成一轮指令和回复后回到待命，
+        由本地唤醒词继续过滤环境声音。
+        """
+        try:
+            ok = await self.connect_protocol()
+            if not ok:
+                return
+
+            self.listening_mode = ListeningMode.AUTO_STOP
+            self.keep_listening = False
+            await self.protocol.send_start_listening(ListeningMode.AUTO_STOP)
+            await self.set_device_state(DeviceState.LISTENING)
+        except Exception:
+            pass
     def _setup_protocol_callbacks(self) -> None:
         self.protocol.on_network_error(self._on_network_error)
         self.protocol.on_incoming_json(self._on_incoming_json)

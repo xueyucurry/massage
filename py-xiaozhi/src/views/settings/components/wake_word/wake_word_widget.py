@@ -280,6 +280,11 @@ class WakeWordWidget(QWidget):
         # 没有声母（零声母）
         return [pinyin]
 
+    def _sanitize_keyword_text(self, text: str) -> str:
+        """
+        移除唤醒词中的标点和空白，避免 sherpa-onnx 解析到词表外 token.
+        """
+        return "".join(char for char in str(text or "").strip() if char.isalpha())
     def _chinese_to_keyword_format(self, chinese_text: str) -> str:
         """
         将中文转换为keyword格式.
@@ -295,18 +300,24 @@ class WakeWordWidget(QWidget):
             return f"# 转换失败（缺少pypinyin） - {chinese_text}"
 
         try:
+            display_text = self._sanitize_keyword_text(chinese_text)
+            if not display_text:
+                return f"# 转换失败（唤醒词为空） - {chinese_text}"
+
             # 转换为带声调拼音
-            pinyin_list = lazy_pinyin(chinese_text, style=Style.TONE)
+            pinyin_list = lazy_pinyin(display_text, style=Style.TONE)
 
             # 分割每个拼音
             split_parts = []
             for pinyin in pinyin_list:
+                if not any(char.isalpha() for char in str(pinyin)):
+                    continue
                 parts = self._split_pinyin(pinyin)
                 split_parts.extend(parts)
 
             # 拼接结果
             pinyin_str = " ".join(split_parts)
-            keyword_line = f"{pinyin_str} @{chinese_text}"
+            keyword_line = f"{pinyin_str} @{display_text}"
 
             return keyword_line
 
@@ -436,11 +447,6 @@ class WakeWordWidget(QWidget):
         获取默认关键词列表，只返回中文.
         """
         default_keywords = [
-            "小爱同学",
-            "你好问问",
-            "小艺小艺",
-            "小米小米",
-            "你好小智",
-            "贾维斯",
+            "你好",
         ]
         return "\n".join(default_keywords)

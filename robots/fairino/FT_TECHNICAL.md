@@ -118,7 +118,7 @@
 | `self.fairino_massage.pause` | 写 `current_control.json` 的 `request=pause`，执行进程在 checkpoint 消费 |
 | `self.fairino_massage.resume` / `continue` / `resume_massage` | 从状态中的 `resume_*` 字段构造执行子进程启动参数 |
 | `self.fairino_massage.stop` | 写 `request=stop`，等待执行进程退出，然后调用 `./massage home` |
-| `self.fairino_massage.adjust_force` | 写一次性 `force_adjust.seq` 和 `delta_n`，执行进程在 checkpoint 消费；方向由 `direction` 归一化，`softer + 10` 会落成 `-10N` |
+| `self.fairino_massage.adjust_force` | 运行中写一次性 `force_adjust.seq` 和 `delta_n`，执行进程在 checkpoint 消费；暂停期间直接更新 `force_target_n`，恢复时由 `--force-target-n` 生效；方向由 `direction` 归一化，`softer + 10` 会落成 `-10N` |
 | `self.fairino_massage.status` | 从状态文件读取会话、轨迹、进度和机械臂位姿 |
 
 检测工具默认 `display=True`，因此会保留 `ft.py` 检测画面。MCP `detect` 返回成功只表示检测任务已经启动；检测真正完成后，后台线程写 `status=detected` 和 `trajectory_path`。默认 `FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE=1` 时，运行时会向小智发起内部状态查询请求，要求小智调用 `self.fairino_massage.status` 并播报检测完成。

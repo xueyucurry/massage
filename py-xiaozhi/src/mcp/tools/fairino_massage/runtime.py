@@ -27,6 +27,8 @@ EXECUTE_RUNNER = FAIRINO_DIR / "run_ft_agent_process_ros2.sh"
 MASSAGE_CLI = PROJECT_ROOT / "massage"
 MASSAGE_ACTION_SEQUENCE = ("dian_jin", "fen_jin", "shun_jin")
 FORCE_ADJUST_STEP_N = float(os.environ.get("FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N", "5.0"))
+LIVE_FORCE_TARGET_MIN_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MIN_N", "1.0"))
+LIVE_FORCE_TARGET_MAX_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MAX_N", "80.0"))
 FORCE_INCREASE_DIRECTIONS = {
     "stronger",
     "increase",
@@ -248,6 +250,44 @@ def _normalize_force_delta(direction: str = "", delta_n: Optional[float] = None)
     raise ValueError("direction 必须是 stronger/increase 或 softer/decrease")
 
 
+def _clamp_force_target_n(value: float) -> float:
+    low = min(float(LIVE_FORCE_TARGET_MIN_N), float(LIVE_FORCE_TARGET_MAX_N))
+    high = max(float(LIVE_FORCE_TARGET_MIN_N), float(LIVE_FORCE_TARGET_MAX_N))
+    return max(low, min(high, float(value)))
+
+
+def _force_target_from_state(state: Dict[str, Any]) -> Optional[float]:
+    last_result = state.get("last_result")
+    candidates: List[Any] = [
+        state.get("force_target_n"),
+        (state.get("last_force_adjustment") or {}).get("force_target_n")
+        if isinstance(state.get("last_force_adjustment"), dict)
+        else None,
+    ]
+    if isinstance(last_result, dict):
+        for path in (
+            ("execute", "trajectory", "force_target_n"),
+            ("load", "trajectory", "force_target_n"),
+            ("trajectory", "force_target_n"),
+        ):
+            value: Any = last_result
+            for key in path:
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(key)
+            candidates.append(value)
+
+    for candidate in candidates:
+        if candidate in (None, ""):
+            continue
+        try:
+            return float(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _infer_massage_target_from_trajectory(path: str) -> str:
     with Path(path).open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -358,10 +398,13 @@ def _status_summary(state: Dict[str, Any]) -> str:
     if status == "pausing":
         return f"{speech_label}已收到暂停请求，正在等待最近安全检查点；当前动作={state.get('current_action')}。"
     if status == "paused":
+        force_text = ""
+        if state.get("force_target_n") is not None:
+            force_text = f"，目标力度={float(state.get('force_target_n')):.1f}N"
         return (
             f"{speech_label}按摩已暂停，可继续；恢复点 stage={state.get('resume_stage')}，"
             f"action={_infer_resume_action(state)}，point_index={state.get('resume_point_index')}，"
-            f"repeat_index={_infer_resume_repeat_index(state)}，step_index={_infer_resume_step_index(state)}。"
+            f"repeat_index={_infer_resume_repeat_index(state)}，step_index={_infer_resume_step_index(state)}{force_text}。"
         )
     if status == "stopping":
         if state.get("stage") == "completed" and state.get("current_action") == "return_home":
@@ -834,11 +877,66 @@ class FairinoMassageRuntime:
         with self._lock:
             self._refresh_state_from_disk_unlocked()
             worker_alive = self._is_worker_alive_unlocked()
-            status = self._state.get("status")
+            status = str(self._state.get("status") or "").strip().lower()
+
+            if status == "pausing" and worker_alive:
+                return {
+                    "success": False,
+                    "message": "正在进入暂停状态，请等机械臂退回贴近前悬空位后再调整力度",
+                    "state": self._state_copy_unlocked(),
+                }
+
+            if status == "paused" or (status == "pausing" and not worker_alive):
+                current_force = _force_target_from_state(self._state)
+                if current_force is None:
+                    return {
+                        "success": False,
+                        "message": "当前暂停会话没有可用目标力度，请先完成检测或开始按摩",
+                        "state": self._state_copy_unlocked(),
+                    }
+
+                target_force = _clamp_force_target_n(float(current_force) + float(delta))
+                applied_delta = float(target_force) - float(current_force)
+                seq = f"force-{time.time_ns()}"
+                direction_text = "增大" if applied_delta > 0 else "减小" if applied_delta < 0 else "保持"
+                adjustment = {
+                    "seq": seq,
+                    "delta_n": float(applied_delta),
+                    "requested_delta_n": float(delta),
+                    "previous_force_target_n": float(current_force),
+                    "force_target_n": float(target_force),
+                    "source": "小智语音暂停期间力度调整",
+                    "mode": "paused",
+                    "created_at": _now_text(),
+                }
+                if abs(applied_delta) < 1e-9:
+                    message = f"暂停期间目标力度已在边界，保持 {target_force:.1f}N，继续按摩后生效"
+                else:
+                    message = (
+                        f"暂停期间已将按摩力度{direction_text} "
+                        f"{abs(applied_delta):.1f}N，目标力度 {target_force:.1f}N，继续按摩后生效"
+                    )
+                self._state.update(
+                    status="paused",
+                    force_target_n=float(target_force),
+                    last_force_adjustment=adjustment,
+                    last_force_adjust_seq=seq,
+                    pending_force_adjustment=None,
+                    message=message,
+                )
+                self._save_state_unlocked()
+                return {
+                    "success": True,
+                    "message": message,
+                    "delta_n": float(applied_delta),
+                    "force_target_n": float(target_force),
+                    "state": self._state_copy_unlocked(),
+                }
+
             if not worker_alive or status != "running":
                 return {
                     "success": False,
-                    "message": "当前没有正在执行的按摩任务，不能调整力度",
+                    "message": "当前没有正在执行或已暂停的按摩任务，不能调整力度",
                     "state": self._state_copy_unlocked(),
                 }
 
