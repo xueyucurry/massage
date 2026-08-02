@@ -1,6 +1,6 @@
-# RTMPOSE.py D435i 实时部署说明
+# RTMPose D435i 实时部署说明
 
-当前版本的 `RTMPOSE.py` 默认直接读取当前 RealSense D435i 的实时彩色图和对齐深度图，用 MMPose / RTMPose 检测人体关键点，并绘制同侧髋部到膝盖的连线。
+当前版本通过 `rtmpose.py` 启动，具体实现位于 `rtmpose_detector.py`。程序默认读取 RealSense D435i 的实时彩色图和对齐深度图，用 MMPose / RTMPose 检测人体关键点，并绘制同侧髋部到膝盖的连线。
 
 ROS bag 处理仍保留为可选模式：需要时显式加 `--source bag --bags <file.bag>`。
 
@@ -60,7 +60,7 @@ https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-coco
 
 ```bash
 cd /home/franka/massage/robots/fairino
-/home/franka/massage/env/.venv/bin/python RTMPOSE.py
+/home/massage/massage/env/.venv/bin/python rtmpose.py
 ```
 
 也可以用小写包装入口：
@@ -75,7 +75,7 @@ cd /home/franka/massage/robots/fairino
 常用参数：
 
 ```bash
-/home/franka/massage/env/.venv/bin/python RTMPOSE.py \
+/home/massage/massage/env/.venv/bin/python rtmpose.py \
   --device cuda:0 \
   --side nearest \
   --width 640 \
@@ -112,7 +112,7 @@ rtmpose_hip_knee_output/realsense_rtmpose_hip_knee_*.json
 
 ```bash
 cd /home/franka/massage/robots/fairino
-/home/franka/massage/env/.venv/bin/python RTMPOSE.py \
+/home/massage/massage/env/.venv/bin/python rtmpose.py \
   --source bag \
   --bags /path/to/file.bag \
   --output-dir rtmpose_hip_knee_output
@@ -149,7 +149,7 @@ PY
 cd /home/franka/massage/robots/fairino
 /home/franka/massage/env/.venv/bin/python - <<'PY'
 import numpy as np
-from RTMPOSE import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, RTMPoseHipKneeDetector
+from rtmpose_detector import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, RTMPoseHipKneeDetector
 
 detector = RTMPoseHipKneeDetector(
     pose2d=DEFAULT_RTMPOSE_CONFIG,

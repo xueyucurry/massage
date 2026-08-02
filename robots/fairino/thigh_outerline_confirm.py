@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 import torch
 
-from RTMPOSE import (
+from rtmpose_detector import (
     DEFAULT_RTMPOSE_CONFIG,
     DEFAULT_RTMPOSE_WEIGHTS,
     LEFT_ANKLE,

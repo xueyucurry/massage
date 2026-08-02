@@ -32,7 +32,7 @@
 - `force_control.py`：力传感器厂商/设备常量、`ForceControlConfig`、工具坐标轴函数。
 - `dianjing.py`：相机到机械臂矩阵加载和点坐标批量变换。
 - `thigh_outerline_confirm.py`：RealSense 读取、RTMPose 髋膝检测、大腿偏移线生成、确认文件保存。
-- `RTMPOSE.py`：RTMPose 默认配置、权重和旋转选项。
+- `rtmpose_detector.py`：RTMPose 默认配置、权重、旋转选项和推理实现。
 - `ft_agent_api.py`：面向智能体的检测、加载轨迹、执行动作、暂停/恢复 checkpoint 封装。
 - `ft_agent_process.py`：小智后台子进程入口，负责把 CLI 参数转成 `ft_agent_api.py` 调用，并把结果写入 JSON。
 - `py-xiaozhi/src/mcp/tools/fairino_massage`：小智 MCP 工具注册和运行时状态管理。

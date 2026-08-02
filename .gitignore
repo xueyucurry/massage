@@ -8,7 +8,8 @@ __pycache__/
 .venv-noetic/
 env/.venv/
 py-xiaozhi/.venv/
-py-xiaozhi/.venv-linux/
+py-xiaozhi/.venv-linux
+robots/fairino/.venv
 
 # Local secrets/config. Keep checked-in templates visible.
 *.env
@@ -27,6 +28,7 @@ robots/fairino/ft_locked_trajectory_output/
 robots/fairino/robot_meridian_output/
 robots/fairino/rtmpose_hip_knee_output/
 robots/fairino/rtmpose_thigh_confirm_output/
+robots/fairino/rtmpose_thigh_adjust_output/
 shared/camera/rosbags/
 
 # Backups, scratch files, and large local/runtime artifacts
@@ -43,9 +45,11 @@ shared/camera/rosbags/
 *.whl
 robots/fairino/Untitled
 
-# ROS2 build outputs; install is tracked for the current runnable snapshot.
+# ROS2 build outputs are machine-specific and must be rebuilt locally.
 robots/fairino/fairino_ros2/frcobot_ros2-master/build/
+robots/fairino/fairino_ros2/frcobot_ros2-master/install/
 robots/fairino/fairino_ros2/frcobot_ros2-master/log/
+robots/fairino/fairino_ros2/install.repo-snapshot/
 robots/realman/massage_ws/build/
 robots/realman/massage_ws/install/
 robots/realman/massage_ws/log/

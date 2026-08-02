@@ -114,7 +114,7 @@ from thigh_outerline_confirm import (
     sample_depth_m as sample_thigh_depth_m,
     save_confirmation as save_thigh_confirmation,
 )
-from RTMPOSE import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, ROTATIONS
+from rtmpose_detector import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, ROTATIONS
 
 
 ROS2_WORKSPACE = str(SCRIPT_DIR / "fairino_ros2" / "frcobot_ros2-master")

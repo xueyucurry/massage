@@ -165,6 +165,7 @@ setup_ros_env() {
   fi
   if [[ ! -f "${ROS2_WS}/install/setup.bash" ]]; then
     echo "找不到 FAIRINO ROS2 install 环境: ${ROS2_WS}/install/setup.bash" >&2
+    echo "请先在 ${ROS2_WS} 中执行: source /opt/ros/humble/setup.bash && colcon build --symlink-install" >&2
     exit 1
   fi
 

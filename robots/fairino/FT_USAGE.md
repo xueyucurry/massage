@@ -463,6 +463,6 @@ MASSAGE_TARGET=back LASTTIME_ROS2_FORCE=0 LASTTIME_ROS2_SCRIPT=ft.py ./run_lastt
 | `force_control.py` | 力传感器常量和工具函数 |
 | `thigh_outerline_confirm.py` | 大腿检测、偏移线生成和确认文件保存 |
 | `dianjing.py` | 标定矩阵加载和点云坐标变换 |
-| `RTMPOSE.py` | RTMPose 配置、权重和旋转枚举 |
+| `rtmpose_detector.py` | RTMPose 配置、权重、旋转枚举和推理实现 |
 | `run_shunjin_only.py` | 复用 `ft.py` 的顺筋单项测试入口 |
 | `../../shared/calibration/calibrate_camera_to_robot_aruco.py` | RealSense + ArUco 相机到机械臂标定程序 |

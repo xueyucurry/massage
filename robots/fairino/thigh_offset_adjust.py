@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import torch
 
-from RTMPOSE import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, ROTATIONS, RTMPoseHipKneeDetector
+from rtmpose_detector import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, ROTATIONS, RTMPoseHipKneeDetector
 from thigh_outerline_confirm import (
     DIRECTION_MODES,
     RealSenseReader,

@@ -1,4 +1,4 @@
-from RTMPOSE import main
+from rtmpose_detector import main
 
 
 if __name__ == "__main__":
