@@ -4,7 +4,7 @@ set -eo pipefail
 
 export ROBOT_IP="${ROBOT_IP:-192.168.58.2}"
 export ROS_LOCALHOST_ONLY="${LASTTIME_ROS_LOCALHOST_ONLY:-1}"
-export LASTTIME_ROS2_SCRIPT="${LASTTIME_ROS2_SCRIPT:-lasttime_ros2.py}"
+export LASTTIME_ROS2_SCRIPT="${LASTTIME_ROS2_SCRIPT:-ft.py}"
 if [[ -z "${HOVER_HEIGHT_MM+x}" ]]; then
   if [[ "$(basename "${LASTTIME_ROS2_SCRIPT}")" == "ft.py" ]]; then
     export HOVER_HEIGHT_MM="50.0"
@@ -41,6 +41,7 @@ export LASTTIME_FORCE_HOLD_MAX_STEP_MM="${LASTTIME_FORCE_HOLD_MAX_STEP_MM:-0.08}
 export LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION="${LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROS2_WS="${SCRIPT_DIR}/fairino_ros2/frcobot_ros2-master"
 ROS2_LOG="${SCRIPT_DIR}/.ros2_cmd_server.log"
 RUNTIME_LIB_DIR="${SCRIPT_DIR}/.ros2_runtime_libs"
@@ -216,12 +217,9 @@ echo "FAIRINO 运行库: ${FAIRINO_RUNTIME_LIB}"
 ln -sf "${FAIRINO_RUNTIME_LIB}" "${RUNTIME_LIB_DIR}/libfairino.so.2"
 ln -sf "${FAIRINO_RUNTIME_LIB}" "${RUNTIME_LIB_DIR}/libfairino.so"
 export LD_LIBRARY_PATH="${RUNTIME_LIB_DIR}:${ROS2_WS}/install/fairino_hardware/lib:${ROS2_WS}/install/fairino_msgs/lib:${LD_LIBRARY_PATH:-}"
-if [[ -x ".venv/bin/python" ]]; then
-  PYTHON_BIN=".venv/bin/python"
-elif [[ -x "/home/franka/massage/env/.venv/bin/python" ]]; then
-  PYTHON_BIN="/home/franka/massage/env/.venv/bin/python"
-else
-  echo "未找到 Python 虚拟环境解释器" >&2
+PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/env/.venv/bin/python}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "未找到 Python 虚拟环境解释器: ${PYTHON_BIN}" >&2
   exit 1
 fi
 export PYTHON_BIN

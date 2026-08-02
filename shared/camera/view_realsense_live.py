@@ -1,4 +1,4 @@
-#!/home/franka/anaconda3/envs/llamauav/bin/python
+#!/usr/bin/env python3
 import datetime
 import os
 

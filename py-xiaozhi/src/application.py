@@ -185,14 +185,15 @@ class Application:
             from src.plugins.audio import AudioPlugin
 
             # 按住说话专用模式不启动后台唤醒词，避免环境音误触发播报。
-            plugins = [
-                McpPlugin(),
-                IoTPlugin(),
-                AudioPlugin(),
-                CalendarPlugin(),
-                UIPlugin(mode=mode),
-                ShortcutsPlugin(),
-            ]
+            massage_only = os.getenv(
+                "XIAOZHI_MASSAGE_ONLY", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            plugins = [McpPlugin(), IoTPlugin(), AudioPlugin()]
+            if massage_only:
+                logger.info("按摩专用模式已启用，日程提醒插件已禁用")
+            else:
+                plugins.append(CalendarPlugin())
+            plugins.extend([UIPlugin(mode=mode), ShortcutsPlugin()])
             push_to_talk_only = os.getenv(
                 "XIAOZHI_PUSH_TO_TALK_ONLY", "0"
             ).strip().lower() in {"1", "true", "yes", "on"}

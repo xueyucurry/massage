@@ -2,11 +2,11 @@
 Demo: 膀胱经检测 + 机械臂运动实时展示
 
 工作流程:
-  1. 实时检测: RealSense + YOLO + CoTracker 持续输出脊柱与膀胱经轨迹
+  1. 实时检测: RealSense + YOLO 持续输出脊柱与膀胱经轨迹
   2. 基于脊柱左右两侧显示四条膀胱经:
      近侧两条 = 输入偏移量
      外侧两条 = 输入偏移量的两倍
-  3. 发生遮挡或人体移动时，优先依靠 CoTracker 脊柱采样点继续稳定绘制
+  3. 使用 MeridianLineStabilizer 抑制检测线的单帧跳变
   4. 按 s 可选保存当前检测轨迹，便于离线排查
 
 操作:
@@ -58,20 +58,10 @@ from force_control import (
     setup_collision_guard,
 )
 
-_COTRACKER_DIR = os.path.join(os.path.dirname(__file__), "third_party", "co-tracker")
-if _COTRACKER_DIR not in sys.path:
-    # 放到末尾，避免 third_party/co-tracker/demo.py 抢占当前项目的 demo.py
-    sys.path.append(_COTRACKER_DIR)
-
-try:
-    import hubconf as cotracker_hub
-except Exception:
-    cotracker_hub = None
-
-try:
-    from cotracker.utils.visualizer import Visualizer as CoTrackerVisualizer
-except Exception:
-    CoTrackerVisualizer = None
+# CoTracker is not part of the active detector. The legacy standalone demo class
+# below remains disabled for compatibility with old saved workflows.
+cotracker_hub = None
+CoTrackerVisualizer = None
 
 
 # ===================== 固定初始位姿（p24） =====================
@@ -217,7 +207,7 @@ class PointSmoother:
 class MeridianLineStabilizer:
     """
     对最终膀胱经线做末级稳定：
-    1. 限制单帧端点跳变，抑制 YOLO / CoTracker 切换时的闪跳
+    1. 限制单帧端点跳变，抑制 YOLO 检测结果的闪跳
     2. 短时遮挡或人体轻微移动时保持上一条稳定线，避免检测线瞬间消失
     3. 只有累计稳定若干帧后才视为 ready，允许启动按摩演示
     """

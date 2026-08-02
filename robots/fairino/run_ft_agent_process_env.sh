@@ -2,6 +2,7 @@
 set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROS2_WS="${SCRIPT_DIR}/fairino_ros2/frcobot_ros2-master"
 
 cd "${SCRIPT_DIR}"
@@ -11,14 +12,9 @@ source /opt/ros/humble/setup.bash
 source "${ROS2_WS}/install/setup.bash"
 set -u
 
-if [[ -x ".venv/bin/python" ]]; then
-  PYTHON_BIN=".venv/bin/python"
-elif [[ -x "/home/franka/massage/env/.venv/bin/python" ]]; then
-  PYTHON_BIN="/home/franka/massage/env/.venv/bin/python"
-elif [[ -x "/home/franka/anaconda3/envs/llamauav/bin/python" ]]; then
-  PYTHON_BIN="/home/franka/anaconda3/envs/llamauav/bin/python"
-else
-  echo "未找到 FAIRINO Python 环境" >&2
+PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/env/.venv/bin/python}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "未找到 FAIRINO Python 环境: ${PYTHON_BIN}" >&2
   exit 1
 fi
 

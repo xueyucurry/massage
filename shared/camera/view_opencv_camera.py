@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import os
+from pathlib import Path
 import time
 
 import cv2
@@ -17,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--save-dir",
-        default="/home/franka/massage/robots/realman/rm_demo_output/opencv_camera_snapshots",
+        default=str(Path(__file__).resolve().parent / "output" / "opencv_camera_snapshots"),
         help="directory for snapshots saved with the s key",
     )
     return parser.parse_args()

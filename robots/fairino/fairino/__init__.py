@@ -8,7 +8,6 @@ _PKG_DIR = os.path.dirname(__file__)
 _PROJECT_ROOT = os.path.dirname(_PKG_DIR)
 
 _SDK_BASE_DIRS = [
-    os.environ.get("FAIRINO_SDK_BASE", "").strip(),
     os.path.join(
         _PROJECT_ROOT,
         "fairino-python-sdk-master (1)",
@@ -21,10 +20,18 @@ _SDK_BASE_DIRS = [
     ),
 ]
 
-_LEGACY_ROOTS = [
-    os.environ.get("FAIRINO_SDK_ROOT", "").strip(),
-    "/home/franka/py-xiaozhi/src/user_functions/fairino",
-]
+_VENDORED_SDK_ROOT = os.path.join(_PROJECT_ROOT, "vendor", "fairino_sdk")
+
+
+def _iter_base_dir_candidates(base_dir):
+    if not base_dir:
+        return
+
+    lib_dir = os.path.join(base_dir, "linux", "libfairino")
+    for module_path in sorted(glob.glob(os.path.join(lib_dir, "Robot*.so"))):
+        yield module_path
+
+    yield os.path.join(base_dir, "linux", "fairino", "Robot.py")
 
 
 def _iter_module_candidates():
@@ -32,20 +39,17 @@ def _iter_module_candidates():
     if explicit_module:
         yield explicit_module
 
+    explicit_base = os.environ.get("FAIRINO_SDK_BASE", "").strip()
+    yield from _iter_base_dir_candidates(explicit_base)
+
+    explicit_root = os.environ.get("FAIRINO_SDK_ROOT", "").strip()
+    if explicit_root:
+        yield os.path.join(explicit_root, "Robot.py")
+
+    yield os.path.join(_VENDORED_SDK_ROOT, "Robot.py")
+
     for base_dir in _SDK_BASE_DIRS:
-        if not base_dir:
-            continue
-
-        lib_dir = os.path.join(base_dir, "linux", "libfairino")
-        for module_path in sorted(glob.glob(os.path.join(lib_dir, "Robot*.so"))):
-            yield module_path
-
-        yield os.path.join(base_dir, "linux", "fairino", "Robot.py")
-
-    for legacy_root in _LEGACY_ROOTS:
-        if not legacy_root:
-            continue
-        yield os.path.join(legacy_root, "Robot.py")
+        yield from _iter_base_dir_candidates(base_dir)
 
 
 def _load_robot_module(module_path):
@@ -83,7 +87,7 @@ for _candidate in _iter_module_candidates():
 if Robot is None:
     raise ImportError(
         "未找到可用的 FAIRINO Linux SDK，请确认 FAIRINO_SDK_MODULE / FAIRINO_SDK_BASE "
-        "或项目内 fairino-python-sdk-master 路径可用"
+        "、项目内 vendor/fairino_sdk 或 fairino-python-sdk-master 路径可用"
     )
 
 __all__ = ["Robot", "SDK_ROOT", "SDK_MODULE"]

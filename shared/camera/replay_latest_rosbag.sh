@@ -61,10 +61,10 @@ search_dir = os.environ["BAG_SEARCH_DIR"]
 candidates = []
 patterns = [
     os.path.join(search_dir, "*"),
-    "/home/franka/realsense_bag",
-    "/home/franka/realsense_bag_*",
-    "/home/franka/*.db3",
-    "/home/franka/*.mcap",
+    "/home/massage/realsense_bag",
+    "/home/massage/realsense_bag_*",
+    "/home/massage/*.db3",
+    "/home/massage/*.mcap",
 ]
 
 for pattern in patterns:

@@ -274,6 +274,14 @@ class McpServer:
         except Exception as e:
             logger.warning(f"[MCP] 注册 FAIRINO Massage 工具失败: {e}")
 
+        massage_only_enabled = os.environ.get(
+            "XIAOZHI_MASSAGE_ONLY", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if massage_only_enabled:
+            self.tools.extend(original_tools)
+            logger.info("[MCP] 按摩专用模式已启用，仅注册系统与 FAIRINO 按摩工具")
+            return
+
         # 添加日程管理工具
         from src.mcp.tools.calendar import get_calendar_manager
 
@@ -373,19 +381,6 @@ class McpServer:
             runner_manager.init_tools(self.add_tool, PropertyList, Property, PropertyType)
         except Exception as e:
             logger.warning(f"[MCP] 注册 Runner 工具失败: {e}")
-
-        # 旧 Massage 工具只触发脚本，不走 FAIRINO 轨迹/状态机，默认关闭以免误路由。
-        legacy_massage_enabled = os.environ.get("XIAOZHI_ENABLE_LEGACY_MASSAGE", "0").lower()
-        if legacy_massage_enabled in {"1", "true", "yes", "on"}:
-            try:
-                from src.mcp.tools.massage import get_massage_manager
-
-                massage_manager = get_massage_manager()
-                massage_manager.init_tools(self.add_tool, PropertyList, Property, PropertyType)
-            except Exception as e:
-                logger.warning(f"[MCP] 注册 Massage 工具失败: {e}")
-        else:
-            logger.info("[MCP] 已跳过旧 Massage 工具；当前使用 FAIRINO 轨迹按摩工具")
 
         # 恢复原有工具
         self.tools.extend(original_tools)

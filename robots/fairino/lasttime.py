@@ -1,7 +1,7 @@
 """
 lasttime.py - 膀胱经按摩动作演示程序
 
-完整复用demo.py的视觉检测流程（YOLO + CoTracker + MeridianLineStabilizer）
+复用demo.py的视觉检测流程（YOLO + MeridianLineStabilizer）
 在左外侧膀胱经上执行点筋、分筋、顺筋动作
 """
 
@@ -16,7 +16,6 @@ import cv2
 # 导入demo.py中的所有检测模块
 from demo import (
     LinearMeridianDetector,
-    BackRegionCoTracker,
     MeridianLineStabilizer,
     PointSmoother,
     _build_spine_seed_from_torso,
@@ -228,7 +227,6 @@ class LastTimeDemo:
 
     def __init__(self):
         self.detector = None
-        self.tracker = None
         self.stabilizer = None
         self.smoother = None
         self.robot = None
@@ -270,7 +268,6 @@ class LastTimeDemo:
         self.detector = LinearMeridianDetector(finger_mm)
         self.smoother = PointSmoother(alpha=0.25, max_step_px=12.0)
         self.stabilizer = MeridianLineStabilizer()
-        self.tracker = BackRegionCoTracker()
 
         if self.detector.camera_to_robot is None:
             raise RuntimeError("无法加载标定矩阵")
@@ -299,14 +296,12 @@ class LastTimeDemo:
         meridian_lines = None
         outer_meridian_lines = None
         spine_line = None
-        tracker_result = self.tracker.last_result
         line_source = "none"
 
         pose_info = infer_best_pose_with_rotations(self.detector.model, img, conf=0.5)
 
         detected = False
         pose_conf = 0.0
-        tracker_vis_ratio = 0.0
 
         if pose_info["kpts"] is not None:
             kpts = pose_info["kpts"]
@@ -327,18 +322,6 @@ class LastTimeDemo:
                     )
                     body_offset_px = float(spine_seed["body_offset_px"])
 
-                    if self.tracker.available:
-                        if self.tracker.should_reseed(self.frame_idx):
-                            tracker_result = self.tracker.seed(
-                                img, spine_seed["spine_line"],
-                                lateral_direction_2d, body_offset_px, self.frame_idx
-                            )
-                        else:
-                            tracker_result = self.tracker.update(
-                                img,
-                                self.frame_idx,
-                            )
-
                     neck_l = (neck_u - lateral_direction_2d[0] * body_offset_px,
                              neck_v - lateral_direction_2d[1] * body_offset_px)
                     tail_l = (tail_u - lateral_direction_2d[0] * body_offset_px,
@@ -354,30 +337,12 @@ class LastTimeDemo:
 
         if not detected:
             self.smoother.miss()
-            tracker_result = self.tracker.update(
-                img,
-                self.frame_idx,
-            )
-
-        tracker_reliable = False
-        if tracker_result is not None:
-            tracker_vis_ratio = float(tracker_result.get("visible_ratio", 0.0))
-            tracker_reliable = tracker_vis_ratio >= 0.35
-
-            if not detected and tracker_reliable:
-                if (
-                    tracker_result.get("spine_line") is not None
-                    and tracker_result.get("meridian_lines") is not None
-                ):
-                    spine_line = tracker_result["spine_line"]
-                    meridian_lines = tracker_result["meridian_lines"]
-                    line_source = "tracker"
 
         stable_track = self.stabilizer.update(
             meridian_lines=meridian_lines,
             line_source=line_source,
             pose_conf=pose_conf,
-            tracker_vis_ratio=tracker_vis_ratio,
+            tracker_vis_ratio=0.0,
         )
 
         spine_line = stable_track["spine_line"]

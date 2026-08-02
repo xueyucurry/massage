@@ -6,10 +6,11 @@
 若需与 demo 一致流程，加 --full-init（会走 init_force_sensor，含校零与负载置零）。
 
 用法:
-  cd ~/massage && .venv/bin/python test_force_sensor.py
-  .venv/bin/python test_force_sensor.py --ip 192.168.58.2 --duration 15 --hz 10
-  .venv/bin/python test_force_sensor.py --full-init
-  .venv/bin/python test_force_sensor.py --ros2
+  cd /home/massage/massage/robots/fairino
+  ../../env/.venv/bin/python test_force_sensor.py
+  ../../env/.venv/bin/python test_force_sensor.py --ip 192.168.58.2 --duration 15 --hz 10
+  ../../env/.venv/bin/python test_force_sensor.py --full-init
+  ../../env/.venv/bin/python test_force_sensor.py --ros2
 """
 
 from __future__ import annotations
@@ -21,26 +22,18 @@ import subprocess
 import sys
 import time
 
-# Robot SDK（与 force_control / demo 一致）
-try:
-    from fairino import Robot
-except Exception:
-    try:
-        from src.user_functions.fairino import Robot
-    except Exception:
-        import importlib
-        import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
-        _dir = os.path.dirname(os.path.abspath(__file__))
-        if _dir not in sys.path:
-            sys.path.insert(0, _dir)
-        Robot = importlib.import_module("fairino").Robot
+# Robot SDK（与 force_control / demo 一致）
+from fairino import Robot
 
 # 与 force_control 一致
 FORCE_SENSOR_COMPANY = 24
 FORCE_SENSOR_DEVICE = 0
 FORCE_SENSOR_BUS = 1
-ROS2_WORKSPACE = "/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master"
+ROS2_WORKSPACE = os.path.join(SCRIPT_DIR, "fairino_ros2", "frcobot_ros2-master")
 ROS2_SERVICE_NAME = "fairino_remote_command_service"
 
 

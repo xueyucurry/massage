@@ -39,7 +39,7 @@ export MASSAGE_HOME_ON_GUI_START="${MASSAGE_HOME_ON_GUI_START:-1}"
 
 SERVICE_REGEX="/?${FAIRINO_REMOTE_SERVICE}"
 SERVER_PATTERN='(^|/)ros2_cmd_server([[:space:]]|$)|ros2 run fairino_hardware ros2_cmd_server'
-RUNNER_PATTERN='(^|/)run_lasttime_ros2\.sh([[:space:]]|$)|/home/franka/massage/env/\.venv/bin/python[[:space:]]+ft\.py|(^|/)python[0-9.]*[[:space:]]+ft\.py'
+RUNNER_PATTERN='(^|/)run_lasttime_ros2\.sh([[:space:]]|$)|(^|/)python[0-9.]*[[:space:]]+ft\.py'
 MOVEIT_PATTERN='ros2 launch .*_moveit2_config .*demo\.launch\.py|/move_group|(^|/)move_group([[:space:]]|$)|ros2_control_node'
 XIAOZHI_GUI_PATTERN='(^|/)python[0-9.]*([[:space:]][^[:space:]]*)?[[:space:]]+main\.py[[:space:]]+--mode[[:space:]]+gui'
 FT_AGENT_PATTERN='(^|/)ft_agent_process\.py([[:space:]]|$)|(^|/)run_ft_agent_process_(env|ros2)\.sh([[:space:]]|$)'
@@ -81,6 +81,7 @@ Environment:
   MASSAGE_HOME_ON_GUI_START=${MASSAGE_HOME_ON_GUI_START}
   XIAOZHI_PYTHON=${XIAOZHI_PYTHON}
   XIAOZHI_PUSH_TO_TALK_ONLY=${XIAOZHI_PUSH_TO_TALK_ONLY:-1}
+  XIAOZHI_MASSAGE_ONLY=${XIAOZHI_MASSAGE_ONLY:-1}
   CALIBRATION_PYTHON=${CALIBRATION_PYTHON}
   XIAOZHI_GUI_CLEAN_ON_START=${XIAOZHI_GUI_CLEAN_ON_START:-1}
   MASSAGE_REALSENSE_AUTO_ATTACH=${MASSAGE_REALSENSE_AUTO_ATTACH:-1}
@@ -985,6 +986,7 @@ run_xiaozhi_gui() {
 
   cd "${XIAOZHI_DIR}"
   export XIAOZHI_PUSH_TO_TALK_ONLY="${XIAOZHI_PUSH_TO_TALK_ONLY:-1}"
+  export XIAOZHI_MASSAGE_ONLY="${XIAOZHI_MASSAGE_ONLY:-1}"
   exec "${XIAOZHI_PYTHON}" main.py --mode gui "$@"
 }
 
