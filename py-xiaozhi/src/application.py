@@ -1,6 +1,10 @@
 import asyncio
+import json
+import os
+import re
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Awaitable
 
@@ -28,6 +32,76 @@ from src.utils.opus_loader import setup_opus
 
 logger = get_logger(__name__)
 setup_opus()
+
+_CRITICAL_COMMAND_PREFIXES = (
+    "请",
+    "小智",
+    "麻烦",
+    "帮我",
+    "给我",
+    "现在",
+    "马上",
+    "立刻",
+)
+_CRITICAL_COMMAND_SUFFIXES = ("一下", "吧", "好吗", "好不好", "谢谢")
+_STOP_MASSAGE_COMMANDS = {
+    "停止",
+    "停止按摩",
+    "停止机械臂",
+    "停止机械臂按摩",
+    "结束按摩",
+    "立即停止",
+    "停下来",
+    "别按了",
+    "不要按了",
+}
+_PAUSE_MASSAGE_COMMANDS = {
+    "暂停",
+    "暂停按摩",
+    "暂停机械臂",
+    "暂停机械臂按摩",
+    "先暂停",
+    "先停一下",
+    "停一下",
+    "等一下",
+    "别动",
+}
+
+
+def classify_critical_massage_command(text: str) -> str | None:
+    """Return a local safety command only for a complete, explicit utterance."""
+    normalized = re.sub(r"[\s，。！？、,.!?~～]+", "", str(text or "")).strip()
+    if not normalized:
+        return None
+
+    changed = True
+    while changed and normalized:
+        changed = False
+        for prefix in _CRITICAL_COMMAND_PREFIXES:
+            if normalized.startswith(prefix) and len(normalized) > len(prefix):
+                normalized = normalized[len(prefix) :]
+                changed = True
+                break
+
+    if normalized in _STOP_MASSAGE_COMMANDS:
+        return "stop"
+    if normalized in _PAUSE_MASSAGE_COMMANDS:
+        return "pause"
+
+    changed = True
+    while changed and normalized:
+        changed = False
+        for suffix in _CRITICAL_COMMAND_SUFFIXES:
+            if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                normalized = normalized[: -len(suffix)]
+                changed = True
+                break
+
+    if normalized in _STOP_MASSAGE_COMMANDS:
+        return "stop"
+    if normalized in _PAUSE_MASSAGE_COMMANDS:
+        return "pause"
+    return None
 
 
 class Application:
@@ -68,6 +142,17 @@ class Application:
             ListeningMode.REALTIME if self.aec_enabled else ListeningMode.AUTO_STOP
         )
         self.keep_listening = False
+        self._user_interaction_active = False
+        self._assistant_response_active = False
+        self._unsolicited_tts_blocked = False
+        self._interaction_response_deadline = 0.0
+        self._interaction_response_window_s = max(
+            5.0,
+            float(os.getenv("XIAOZHI_INTERACTION_RESPONSE_WINDOW_S", "30.0")),
+        )
+        self._critical_massage_lock: asyncio.Lock | None = None
+        self._critical_massage_inflight: set[str] = set()
+        self._critical_massage_last_at: dict[str, float] = {}
 
         # 统一任务池（替代 _main_tasks/_bg_tasks）
         self._tasks: set[asyncio.Task] = set()
@@ -99,16 +184,23 @@ class Application:
             # 插件：setup（延迟导入AudioPlugin，确保上面setup_opus已执行）
             from src.plugins.audio import AudioPlugin
 
-            # 注册音频、UI、MCP、IoT、唤醒词、快捷键与日程插件（UI模式从run参数传入）
-            self.plugins.register(
+            # 按住说话专用模式不启动后台唤醒词，避免环境音误触发播报。
+            plugins = [
                 McpPlugin(),
                 IoTPlugin(),
                 AudioPlugin(),
-                WakeWordPlugin(),
                 CalendarPlugin(),
                 UIPlugin(mode=mode),
                 ShortcutsPlugin(),
-            )
+            ]
+            push_to_talk_only = os.getenv(
+                "XIAOZHI_PUSH_TO_TALK_ONLY", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if push_to_talk_only:
+                logger.info("按住说话专用模式已启用，后台唤醒词检测已禁用")
+            else:
+                plugins.insert(3, WakeWordPlugin())
+            self.plugins.register(*plugins)
             await self.plugins.setup_all(self)
             # 启动后广播初始状态，确保 UI 就绪时能看到“待命”
             try:
@@ -172,6 +264,7 @@ class Application:
         self._shutdown_event = asyncio.Event()
         self._state_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
+        self._critical_massage_lock = asyncio.Lock()
 
     def _set_protocol(self, protocol_type: str) -> None:
         logger.debug("设置协议类型: %s", protocol_type)
@@ -183,12 +276,112 @@ class Application:
     # -------------------------
     # 手动聆听（按住说话）
     # -------------------------
+    def authorize_user_interaction(self, source: str) -> None:
+        self._user_interaction_active = True
+        self._assistant_response_active = False
+        self._unsolicited_tts_blocked = False
+        self._interaction_response_deadline = (
+            time.monotonic() + self._interaction_response_window_s
+        )
+        logger.info(f"已授权用户交互响应: source={source}")
+
+    def finish_user_interaction(self, reason: str) -> None:
+        if self._user_interaction_active or self._assistant_response_active:
+            logger.info(f"用户交互响应结束: reason={reason}")
+        self._user_interaction_active = False
+        self._assistant_response_active = False
+        self._interaction_response_deadline = 0.0
+
+    def _response_is_authorized(self) -> bool:
+        if self._assistant_response_active:
+            return True
+        return (
+            self._user_interaction_active
+            and time.monotonic() <= self._interaction_response_deadline
+        )
+
+    async def dispatch_local_critical_massage_command(
+        self, text: str, source: str
+    ) -> bool:
+        """Run pause/stop locally so safety commands do not depend on the LLM."""
+        command = classify_critical_massage_command(text)
+        if command is None:
+            return False
+
+        if self._critical_massage_lock is None:
+            self._critical_massage_lock = asyncio.Lock()
+
+        now = time.monotonic()
+        async with self._critical_massage_lock:
+            last_at = self._critical_massage_last_at.get(command, 0.0)
+            if command in self._critical_massage_inflight or now - last_at < 2.0:
+                logger.info(
+                    "[本地安全路由] 忽略重复%s指令: source=%s text=%r",
+                    "停止" if command == "stop" else "暂停",
+                    source,
+                    text,
+                )
+                return True
+            self._critical_massage_inflight.add(command)
+            self._critical_massage_last_at[command] = now
+
+        command_label = "停止" if command == "stop" else "暂停"
+        logger.warning(
+            "[本地安全路由] 命中%s按摩指令，直接调用本地工具: source=%s text=%r",
+            command_label,
+            source,
+            text,
+        )
+        self.set_chat_message("assistant", f"已在本机执行{command_label}按摩指令")
+
+        try:
+            from src.mcp.tools.fairino_massage.tools import (
+                pause_massage,
+                stop_massage,
+            )
+
+            raw_result = (
+                await stop_massage({})
+                if command == "stop"
+                else await pause_massage({})
+            )
+            try:
+                result = json.loads(raw_result)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                result = {"success": False, "message": str(raw_result)}
+
+            logger.warning(
+                "[本地安全路由] %s工具执行完成: success=%s message=%s",
+                command_label,
+                result.get("success"),
+                result.get("message"),
+            )
+            if result.get("message"):
+                self.set_chat_message("assistant", str(result["message"]))
+            return True
+        except Exception as exc:
+            logger.error(
+                "[本地安全路由] %s工具执行失败: %s",
+                command_label,
+                exc,
+                exc_info=True,
+            )
+            self.set_chat_message(
+                "assistant", f"{command_label}按摩工具执行失败：{exc}"
+            )
+            return True
+        finally:
+            async with self._critical_massage_lock:
+                self._critical_massage_inflight.discard(command)
+
     async def start_listening_manual(self) -> None:
         try:
             ok = await self.connect_protocol()
             if not ok:
                 return
             self.keep_listening = False
+            self.finish_user_interaction("manual-listening-started")
+            self.authorize_user_interaction("manual-input-start")
 
             # 如果说话中发送打断
             if self.device_state == DeviceState.SPEAKING:
@@ -202,6 +395,7 @@ class Application:
 
     async def stop_listening_manual(self) -> None:
         try:
+            self.authorize_user_interaction("manual-input-stop")
             await self.protocol.send_stop_listening()
             await self.set_device_state(DeviceState.IDLE)
         except Exception:
@@ -216,6 +410,7 @@ class Application:
             if not ok:
                 return
 
+            self.authorize_user_interaction("auto-conversation")
             mode = (
                 ListeningMode.REALTIME if self.aec_enabled else ListeningMode.AUTO_STOP
             )
@@ -237,6 +432,7 @@ class Application:
             if not ok:
                 return
 
+            self.authorize_user_interaction("wake-word")
             self.listening_mode = ListeningMode.AUTO_STOP
             self.keep_listening = False
             await self.protocol.send_start_listening(ListeningMode.AUTO_STOP)
@@ -308,6 +504,9 @@ class Application:
         #     self._shutdown_event.set()
 
     def _on_incoming_audio(self, data: bytes):
+        if self._unsolicited_tts_blocked or not self._assistant_response_active:
+            logger.debug("忽略未由用户交互授权的音频响应")
+            return
         logger.debug(f"收到二进制消息，长度: {len(data)}")
         # 转发给插件
         self.spawn(self.plugins.notify_incoming_audio(data), "plugin:on_audio")
@@ -316,10 +515,66 @@ class Application:
         try:
             msg_type = json_data.get("type") if isinstance(json_data, dict) else None
             logger.info(f"收到JSON消息: type={msg_type}")
+            if msg_type == "stt":
+                stt_text = str(json_data.get("text") or "").strip()
+                logger.info("STT文本: %r", stt_text)
+                if self.keep_listening and stt_text:
+                    self.authorize_user_interaction("continuous-stt")
+                elif not self._response_is_authorized():
+                    logger.warning("忽略未由用户交互授权的 STT")
+                    self.spawn(
+                        self.protocol.send_abort_speaking(None),
+                        "abort:unsolicited_stt",
+                    )
+                    return
+                if classify_critical_massage_command(stt_text):
+                    self.spawn(
+                        self.dispatch_local_critical_massage_command(
+                            stt_text, "stt"
+                        ),
+                        "local-safety:stt",
+                    )
+
+            if msg_type == "mcp":
+                payload = json_data.get("payload") or {}
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("method") == "tools/call"
+                    and not self._response_is_authorized()
+                ):
+                    logger.warning("阻止未由用户交互授权的 MCP 工具调用")
+                    self.spawn(
+                        self.protocol.send_abort_speaking(None),
+                        "abort:unsolicited_mcp",
+                    )
+                    return
+
             # 将 TTS start/stop 映射为设备状态（支持自动/实时，且不污染手动模式）
             if msg_type == "tts":
                 state = json_data.get("state")
+                tts_text = str(json_data.get("text") or "").strip()
+                if tts_text:
+                    logger.info("TTS文本: %r", tts_text)
+                if self._unsolicited_tts_blocked:
+                    if state == "stop":
+                        self._unsolicited_tts_blocked = False
+                        logger.info("未授权 TTS 已结束，解除音频丢弃状态")
+                    return
+                if (
+                    not self._response_is_authorized()
+                    and not self._assistant_response_active
+                ):
+                    self._unsolicited_tts_blocked = True
+                    logger.warning(
+                        f"阻止未由用户交互授权的 TTS: state={state}"
+                    )
+                    self.spawn(
+                        self.protocol.send_abort_speaking(None),
+                        "abort:unsolicited_tts",
+                    )
+                    return
                 if state == "start":
+                    self._assistant_response_active = True
                     # 仅当保持会话且实时模式时，TTS开始期间保持LISTENING；否则显示SPEAKING
                     if (
                         self.keep_listening
@@ -361,6 +616,8 @@ class Application:
                         )
             # 转发给插件
             self.spawn(self.plugins.notify_incoming_json(json_data), "plugin:on_json")
+            if msg_type == "tts" and json_data.get("state") == "stop":
+                self.finish_user_interaction("tts-stop")
         except Exception:
             logger.info("收到JSON消息")
 

@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import os
+import socket
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,10 +23,15 @@ import ft
 
 BACK_DETECTION_TIMEOUT_S = float(os.environ.get("BACK_DETECTION_TIMEOUT_S", "30.0"))
 BACK_STABLE_FRAMES = int(os.environ.get("BACK_STABLE_FRAMES", "5"))
+DETECTION_WINDOW_X = int(os.environ.get("FT_DETECTION_WINDOW_X", "60"))
+DETECTION_WINDOW_Y = int(os.environ.get("FT_DETECTION_WINDOW_Y", "80"))
 MASSAGE_ACTION_SEQUENCE = ("dian_jin", "fen_jin", "shun_jin")
 AGENT_FORCE_READING_MAX_ABS_N = float(os.environ.get("FT_AGENT_FORCE_READING_MAX_ABS_N", "1000.0"))
 AGENT_FORCE_READING_MAX_ABS_NM = float(os.environ.get("FT_AGENT_FORCE_READING_MAX_ABS_NM", "1000.0"))
 AGENT_FORCE_READING_RETRIES = max(1, int(os.environ.get("FT_AGENT_FORCE_READING_RETRIES", "2")))
+AGENT_FORCE_TELEMETRY_HOST = os.environ.get("FT_AGENT_FORCE_TELEMETRY_HOST", "127.0.0.1")
+AGENT_FORCE_TELEMETRY_PORT = int(os.environ.get("FT_AGENT_FORCE_TELEMETRY_PORT", "45822"))
+AGENT_FORCE_TELEMETRY_HZ = max(1.0, float(os.environ.get("FT_AGENT_FORCE_TELEMETRY_HZ", "20.0")))
 
 
 class MassageExecutionInterrupted(RuntimeError):
@@ -129,6 +135,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         self._agent_control_repeat_index = 0
         self._agent_control_step_index = 0
         self._agent_applied_force_adjust_seqs = set()
+        self._agent_force_telemetry_socket = None
+        self._agent_force_telemetry_last_at = 0.0
 
     def _agent_force_reading_valid(self, data):
         if not isinstance(data, (list, tuple)) or len(data) < 6:
@@ -146,6 +154,34 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             and torque_max <= AGENT_FORCE_READING_MAX_ABS_NM
         )
 
+    def _publish_force_telemetry(self, values):
+        now = time.monotonic()
+        if now - self._agent_force_telemetry_last_at < 1.0 / AGENT_FORCE_TELEMETRY_HZ:
+            return
+        self._agent_force_telemetry_last_at = now
+
+        try:
+            if self._agent_force_telemetry_socket is None:
+                telemetry_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                telemetry_socket.setblocking(False)
+                self._agent_force_telemetry_socket = telemetry_socket
+            payload = json.dumps(
+                {
+                    "version": 1,
+                    "timestamp": time.time(),
+                    "force": [float(v) for v in values[:6]],
+                    "target_n": float(self._current_force_target_n()),
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self._agent_force_telemetry_socket.sendto(
+                payload,
+                (AGENT_FORCE_TELEMETRY_HOST, AGENT_FORCE_TELEMETRY_PORT),
+            )
+        except (OSError, TypeError, ValueError):
+            # Telemetry is observational and must never affect force control.
+            return
+
     def _install_force_read_guard(self):
         controller = getattr(self, "force_controller", None)
         if controller is None or getattr(controller, "_agent_read_guard_installed", False):
@@ -158,7 +194,9 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             for attempt in range(AGENT_FORCE_READING_RETRIES):
                 data = raw_read()
                 if self._agent_force_reading_valid(data):
-                    return [float(v) for v in data[:6]]
+                    values = [float(v) for v in data[:6]]
+                    self._publish_force_telemetry(values)
+                    return values
                 last_invalid = data
                 if data is not None:
                     print(f"[Force] 丢弃异常六维力读数 attempt={attempt + 1}: {data}")
@@ -232,6 +270,13 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         stable_count = 0
         locked = None
         start = time.time()
+
+        if display:
+            try:
+                cv2.namedWindow("Detection", cv2.WINDOW_NORMAL)
+                cv2.moveWindow("Detection", DETECTION_WINDOW_X, DETECTION_WINDOW_Y)
+            except Exception:
+                pass
 
         try:
             while time.time() - start < timeout_s:
@@ -1076,7 +1121,10 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                         if not ft.FT_CONTINUE_ON_POINT_ERROR:
                             return False
                         continue
-                    offset, reached = self._approach_to_target_force(start_frame, f"顺筋起点 点{point_no}")
+                    offset, reached = self._approach_to_target_force(
+                        start_frame,
+                        f"顺筋起点 点{point_no}",
+                    )
                     if reached:
                         found_start_index = candidate_index
                         break
@@ -1098,10 +1146,13 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             ok = True
             moved_count = 0
             skipped_points = []
+            safety_abort = False
+            previous_contact_frame = None
             try:
                 for i in range(found_start_index, len(frames)):
                     frame = frames[i]
                     point_no = int(frame.get("index", i)) + 1
+                    has_next_frame = i + 1 < len(frames)
                     self._set_agent_control_context("shun_jin", "shun_jin", i)
                     self._control_checkpoint(
                         control,
@@ -1114,12 +1165,116 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     )
                     self.update_preview_status("顺筋", frame.get("index", point_no - 1))
                     print(f"  移动到点{point_no}...")
-                    last_hover_pose = self._pose_from_frame_offset(frame, -self.hover_height_mm)
-                    pose = self._pose_from_frame_offset(frame, offset)
-                    if not self._move_force_pose_checked(pose, f"顺筋移动 点{point_no}"):
+                    motion_frames = ft._subdivide_shun_edge(
+                        previous_contact_frame,
+                        frame,
+                        ft.FORCE_SHUN_SEGMENT_LENGTH_MM,
+                    )
+                    motion_failed = False
+                    for substep_index, motion_frame in enumerate(motion_frames):
+                        substep_no = substep_index + 1
+                        substep_count = len(motion_frames)
+                        self._set_agent_control_context(
+                            "shun_jin",
+                            "shun_jin",
+                            i,
+                            step_index=substep_index,
+                        )
+                        last_hover_pose = self._pose_from_frame_offset(
+                            motion_frame,
+                            -self.hover_height_mm,
+                        )
+                        pose = self._pose_from_frame_offset(motion_frame, offset)
+                        move_context = (
+                            f"顺筋移动 点{point_no}"
+                            if substep_count == 1
+                            else f"顺筋移动 点{point_no} 子段{substep_no}/{substep_count}"
+                        )
+                        if not self._move_force_pose_checked(pose, move_context):
+                            motion_failed = True
+                            break
+
+                        tangent_n, tangent_release = self._check_shun_tangential_force(
+                            f"顺筋切向力检查 点{point_no} 子段{substep_no}/{substep_count}"
+                        )
+                        has_more_contact_motion = substep_no < substep_count or has_next_frame
+                        segment_release = (
+                            previous_contact_frame is not None
+                            and has_more_contact_motion
+                            and ft.FORCE_SHUN_SEGMENT_LENGTH_MM > 0.0
+                            and ft.FORCE_SHUN_RELEASE_LIFT_MM > 0.0
+                        )
+                        if tangent_release and not has_more_contact_motion:
+                            print(
+                                f"    警告：顺筋末段切向力 {tangent_n:.2f}N 超限，"
+                                "立即结束并返回悬空位"
+                            )
+                            safety_abort = True
+                            motion_failed = True
+                            break
+                        if has_more_contact_motion and (segment_release or tangent_release):
+                            if tangent_release:
+                                reason = f"切向力 {tangent_n:.2f}N 超限"
+                            else:
+                                reason = (
+                                    f"接触子段完成（上限 {ft.FORCE_SHUN_SEGMENT_LENGTH_MM:.1f}mm）"
+                                )
+                            print(
+                                f"  顺筋点{point_no} 子段{substep_no}/{substep_count}"
+                                f"触发卸力：{reason}"
+                            )
+                            self._set_agent_control_context(
+                                "shun_jin",
+                                "segment_release",
+                                i,
+                                step_index=substep_index,
+                            )
+                            release_offset, release_ok = self._release_shun_contact(
+                                motion_frame,
+                                offset,
+                                f"顺筋分段 点{point_no} 子段{substep_no}/{substep_count}",
+                            )
+                            if not release_ok:
+                                safety_abort = True
+                                motion_failed = True
+                                break
+                            resume_point_index = (
+                                max(found_start_index, i - 1)
+                                if substep_no < substep_count
+                                else i
+                            )
+                            self._control_checkpoint(
+                                control,
+                                stage="shun_jin",
+                                current_action="segment_release",
+                                current_point_index=i,
+                                next_stage="shun_jin",
+                                next_point_index=resume_point_index,
+                                message=(
+                                    f"顺筋点{point_no} 子段{substep_no}/{substep_count}"
+                                    "已卸力，可安全暂停"
+                                ),
+                                safe_to_pause=True,
+                                extra={"current_step_index": substep_index},
+                            )
+                            offset, reached = self._recontact_shun_after_release(
+                                motion_frame,
+                                release_offset,
+                                f"顺筋下一段起点 点{point_no} 子段{substep_no}/{substep_count}",
+                            )
+                            if not reached:
+                                print(
+                                    f"    警告：顺筋点{point_no} 子段{substep_no}/{substep_count}"
+                                    "卸力后未重新达到目标力"
+                                )
+                                safety_abort = True
+                                motion_failed = True
+                                break
+
+                    if motion_failed:
                         skipped_points.append(point_no)
                         ok = False
-                        if not ft.FT_CONTINUE_ON_POINT_ERROR:
+                        if safety_abort or not ft.FT_CONTINUE_ON_POINT_ERROR:
                             break
                         print(f"    警告：顺筋点{point_no}移动失败，跳过该点继续")
                         continue
@@ -1161,6 +1316,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                         print(f"    警告：顺筋点{point_no}保压失败，跳过该点继续")
                         continue
                     moved_count += 1
+                    previous_contact_frame = frame
                     next_index = i + 1
                     request = self._control_checkpoint(
                         control,
@@ -1194,7 +1350,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 if moved_count <= 0:
                     print("    警告：顺筋没有完成任何候选点")
                     ok = False
-                if ft.FT_CONTINUE_ON_POINT_ERROR and skipped_points:
+                if ft.FT_CONTINUE_ON_POINT_ERROR and skipped_points and not safety_abort:
                     ok = True
             except MassageExecutionInterrupted:
                 raise
@@ -1374,6 +1530,21 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 self._agent_point_count = len(frames)
 
             if ft.LASTTIME_ROS2_FORCE:
+                if not resume_from_local_hover:
+                    initial_action = (
+                        "shun_jin"
+                        if start_stage == "shun_jin" and run_shun
+                        else "point_actions"
+                    )
+                    self.set_force_target_n(
+                        ft._force_target_for_massage_action(
+                            self.massage_target,
+                            initial_action,
+                        ),
+                        context="顺筋目标力"
+                        if initial_action == "shun_jin"
+                        else "点筋/分筋目标力",
+                    )
                 print(f"初始化 {self.force_target_n:.1f}N 恒力控制（请确认末端悬空无接触）...")
                 self.init_force_controller()
 
@@ -1552,6 +1723,14 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 if not shun_candidate_frames:
                     print("[容错] 没有已确认可达悬空点，顺筋将尝试原始轨迹")
 
+                if not (resume_from_local_hover and start_stage == "shun_jin"):
+                    self.set_force_target_n(
+                        ft._force_target_for_massage_action(
+                            self.massage_target,
+                            "shun_jin",
+                        ),
+                        context="顺筋目标力",
+                    )
                 print("\n回到顺筋起点...")
                 shun_first_frame = shun_frames[0]
                 shun_start_index = start_point_index if start_stage == "shun_jin" else 0

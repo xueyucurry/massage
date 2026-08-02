@@ -338,6 +338,11 @@ def hold_detection_preview(args, result):
     window_name = "Detection"
     try:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.moveWindow(
+            window_name,
+            ft_agent_api.DETECTION_WINDOW_X,
+            ft_agent_api.DETECTION_WINDOW_Y,
+        )
     except Exception:
         pass
 

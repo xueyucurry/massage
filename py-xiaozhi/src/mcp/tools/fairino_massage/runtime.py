@@ -27,6 +27,7 @@ EXECUTE_RUNNER = FAIRINO_DIR / "run_ft_agent_process_ros2.sh"
 MASSAGE_CLI = PROJECT_ROOT / "massage"
 MASSAGE_ACTION_SEQUENCE = ("dian_jin", "fen_jin", "shun_jin")
 FORCE_ADJUST_STEP_N = float(os.environ.get("FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N", "5.0"))
+BACK_SHUN_JIN_FORCE_N = float(os.environ.get("BACK_SHUN_JIN_FORCE_N", "2.0"))
 LIVE_FORCE_TARGET_MIN_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MIN_N", "1.0"))
 LIVE_FORCE_TARGET_MAX_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MAX_N", "80.0"))
 FORCE_INCREASE_DIRECTIONS = {
@@ -63,7 +64,7 @@ FORCE_DECREASE_DIRECTIONS = {
 }
 BLADDER_MERIDIAN_SPEECH_TEXT = os.environ.get(
     "FAIRINO_MASSAGE_BLADDER_MERIDIAN_SPEECH_TEXT",
-    "旁光经",
+    "庞光经",
 )
 
 _runtime = None
@@ -104,7 +105,7 @@ def _speech_safe_label(label: str) -> str:
     text = str(label or "")
     if not _env_enabled("FAIRINO_MASSAGE_TTS_SAFE_BLADDER_MERIDIAN", True):
         return text
-    return text.replace("膀胱经", BLADDER_MERIDIAN_SPEECH_TEXT).replace("膀胱", "旁光")
+    return text.replace("膀胱经", BLADDER_MERIDIAN_SPEECH_TEXT).replace("膀胱", "庞光")
 
 
 def _schedule_xiaozhi_detect_status_check(target_label: str) -> bool:
@@ -143,7 +144,7 @@ def _schedule_xiaozhi_detect_status_check(target_label: str) -> bool:
             speech_label = _speech_safe_label(label)
             prompt = (
                 "请检查当前FAIRINO检测状态，必须调用 self.fairino_massage.status。"
-                "语音播报时涉及背部经络，一律口播“旁光经”，不要改成其他写法。"
+                "语音播报时涉及背部经络，一律口播“庞光经”（读音 pang guang jing），不要改成其他写法。"
                 f"如果工具返回 status=detected 且 trajectory_saved=true，请播报“{speech_label}检测已完成，轨迹已保存”。"
                 "不要开始按摩，不要调用开始、暂停、继续或停止工具。"
             )
@@ -286,6 +287,20 @@ def _force_target_from_state(state: Dict[str, Any]) -> Optional[float]:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _force_target_for_start(
+    state: Dict[str, Any],
+    target: str,
+    actions: List[str],
+    resume: bool,
+) -> Optional[float]:
+    current_force = _force_target_from_state(state)
+    if resume:
+        return current_force
+    if target == "back" and actions == ["shun_jin"]:
+        return float(BACK_SHUN_JIN_FORCE_N)
+    return current_force
 
 
 def _infer_massage_target_from_trajectory(path: str) -> str:
@@ -465,6 +480,7 @@ class FairinoMassageRuntime:
         self._worker_thread: Optional[threading.Thread] = None
         self._worker_process: Optional[subprocess.Popen] = None
         self._detect_display_process: Optional[subprocess.Popen] = None
+        self._stop_lock = asyncio.Lock()
         self._state = self._load_state()
 
     def _load_state(self) -> Dict[str, Any]:
@@ -806,7 +822,7 @@ class FairinoMassageRuntime:
                     message="经络检测完成，轨迹已保存",
                     last_result=result,
                 )
-                if _env_enabled("FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE", True):
+                if _env_enabled("FAIRINO_MASSAGE_ANNOUNCE_DETECT_DONE", False):
                     target_label = state.get("target_label") or result.get("target_label") or "经络"
                     _schedule_xiaozhi_detect_status_check(target_label)
                 return {
@@ -1073,6 +1089,28 @@ class FairinoMassageRuntime:
                 start_step_index = 0
                 session_id = state.get("session_id") or _new_session_id()
 
+            selected_force_target_n = _force_target_for_start(
+                state,
+                normalized_target,
+                normalized_actions,
+                resume,
+            )
+            shun_only = (
+                not resume
+                and normalized_target == "back"
+                and normalized_actions == ["shun_jin"]
+            )
+            if shun_only:
+                state_message = (
+                    f"正在启动顺筋按摩，目标力度 {selected_force_target_n:.1f}N"
+                )
+                result_message = (
+                    f"顺筋按摩任务已启动，目标力度为 {selected_force_target_n:g} 牛"
+                )
+            else:
+                state_message = "正在启动按摩动作"
+                result_message = "按摩任务已继续" if resume else "按摩任务已启动"
+
             self._write_control_unlocked("continue")
             self._state.update(
                 session_id=session_id,
@@ -1080,7 +1118,7 @@ class FairinoMassageRuntime:
                 target=normalized_target,
                 trajectory_path=str(path),
                 actions=normalized_actions,
-                force_target_n=state.get("force_target_n"),
+                force_target_n=selected_force_target_n,
                 stage=start_stage,
                 current_action="start",
                 current_point_index=start_point_index,
@@ -1091,7 +1129,7 @@ class FairinoMassageRuntime:
                 resume_action=start_action or None,
                 resume_repeat_index=start_repeat_index,
                 resume_step_index=start_step_index,
-                message="正在启动按摩动作",
+                message=state_message,
             )
             self._save_state_unlocked()
 
@@ -1102,7 +1140,7 @@ class FairinoMassageRuntime:
                     normalized_target,
                     str(path),
                     list(normalized_actions),
-                    state.get("force_target_n"),
+                    selected_force_target_n,
                     start_stage,
                     start_point_index,
                     start_action,
@@ -1115,7 +1153,7 @@ class FairinoMassageRuntime:
             self._worker_thread.start()
             return {
                 "success": True,
-                "message": "按摩任务已启动" if not resume else "按摩任务已继续",
+                "message": result_message,
                 "state": self._state_copy_unlocked(),
             }
 
@@ -1327,9 +1365,23 @@ class FairinoMassageRuntime:
             }
 
     async def stop(self) -> Dict[str, Any]:
+        async with self._stop_lock:
+            return await self._stop_once()
+
+    async def _stop_once(self) -> Dict[str, Any]:
         with self._lock:
             self._refresh_state_from_disk_unlocked()
             worker_alive = self._is_worker_alive_unlocked()
+            if not worker_alive and self._state.get("status") == "stopped":
+                state = self._state_copy_unlocked()
+                home_result = state.get("stop_home_result")
+                home_ok = home_result is None or bool(home_result.get("ok"))
+                return {
+                    "success": home_ok,
+                    "message": state.get("message") or "按摩已经停止",
+                    "home_result": home_result,
+                    "state": state,
+                }
             self._state.update(
                 status="stopping" if worker_alive else "stopped",
                 message="已请求停止，先回当前点悬空位，再回起始位置" if worker_alive else "按摩已停止，准备回到起始位置",

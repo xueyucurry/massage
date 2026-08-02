@@ -16,6 +16,7 @@ XIAOZHI_PYTHON="${XIAOZHI_PYTHON:-${XIAOZHI_DIR}/.venv-linux/bin/python}"
 CALIBRATION_DIR="${ROOT_DIR}/shared/calibration"
 CALIBRATION_SCRIPT="${CALIBRATION_DIR}/calibrate_camera_to_robot_aruco.py"
 CALIBRATION_PYTHON="${CALIBRATION_PYTHON:-${ROOT_DIR}/env/.venv/bin/python}"
+BACK_LINE_ADJUSTER="${FAIRINO_DIR}/adjust_back_line_offset.py"
 FT_AGENT_STATE_DIR="${FAIRINO_DIR}/ft_agent_state"
 FT_AGENT_STATE_FILE="${FT_AGENT_STATE_DIR}/current_session.json"
 FT_AGENT_CONTROL_FILE="${FT_AGENT_STATE_DIR}/current_control.json"
@@ -51,7 +52,10 @@ Usage:
   ./massage stop       Stop FAIRINO ROS2, MoveIt, and residual ft.py runner
   ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
   ./massage gui        Start py-xiaozhi GUI
+  ./massage force-monitor Open the read-only force sensor monitor
   ./massage calibrate  Start RealSense + ArUco camera-to-robot calibration
+  ./massage adjust-lines Open the live four-line offset editor
+  ./massage camera-check Ensure RealSense is attached and readable in WSL
   ./massage record-home Record current TCP pose as start/stop return pose
   ./massage home        Move to recorded start/stop return pose
   ./massage help       Show this help
@@ -76,9 +80,82 @@ Environment:
   MASSAGE_HOME_SAFE_Z_MM=${MASSAGE_HOME_SAFE_Z_MM}
   MASSAGE_HOME_ON_GUI_START=${MASSAGE_HOME_ON_GUI_START}
   XIAOZHI_PYTHON=${XIAOZHI_PYTHON}
+  XIAOZHI_PUSH_TO_TALK_ONLY=${XIAOZHI_PUSH_TO_TALK_ONLY:-1}
   CALIBRATION_PYTHON=${CALIBRATION_PYTHON}
   XIAOZHI_GUI_CLEAN_ON_START=${XIAOZHI_GUI_CLEAN_ON_START:-1}
+  MASSAGE_REALSENSE_AUTO_ATTACH=${MASSAGE_REALSENSE_AUTO_ATTACH:-1}
+  MASSAGE_REALSENSE_REQUIRED=${MASSAGE_REALSENSE_REQUIRED:-1}
+  REALSENSE_USB_HARDWARE_ID=${REALSENSE_USB_HARDWARE_ID:-8086:0b3a}
 EOF
+}
+
+flag_enabled() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+realsense_attached() {
+  command -v lsusb >/dev/null 2>&1 \
+    && lsusb 2>/dev/null \
+      | grep -qi "ID ${REALSENSE_USB_HARDWARE_ID:-8086:0b3a}"
+}
+
+ensure_realsense_attached() {
+  local hardware_id="${REALSENSE_USB_HARDWARE_ID:-8086:0b3a}"
+  local auto_attach="${MASSAGE_REALSENSE_AUTO_ATTACH:-1}"
+  local required="${MASSAGE_REALSENSE_REQUIRED:-1}"
+  local attach_output=""
+  local attach_rc=0
+  local attempts=32
+  local i
+
+  if realsense_attached; then
+    echo "RealSense 已连接到 WSL (${hardware_id})。"
+    return 0
+  fi
+
+  echo "WSL 中未检测到 RealSense (${hardware_id})。"
+  if [[ -n "${WSL_DISTRO_NAME:-}" ]] && flag_enabled "${auto_attach}"; then
+    if command -v usbipd.exe >/dev/null 2>&1; then
+      echo "正在通过 usbipd 自动挂载 RealSense..."
+      attach_output="$(
+        usbipd.exe attach --wsl --hardware-id "${hardware_id}" 2>&1
+      )" || attach_rc=$?
+      if [[ -n "${attach_output}" ]]; then
+        printf '%s\n' "${attach_output}" | tr -d '\r'
+      fi
+
+      for ((i = 0; i < attempts; i++)); do
+        if realsense_attached; then
+          echo "RealSense 自动挂载成功。"
+          return 0
+        fi
+        sleep 0.25
+      done
+    else
+      attach_rc=127
+      echo "WSL 无法调用 usbipd.exe，不能自动挂载相机。" >&2
+    fi
+  elif [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+    echo "RealSense 自动挂载已关闭。" >&2
+  fi
+
+  echo "RealSense 挂载失败 (usbipd exit=${attach_rc})。" >&2
+  echo "请确认相机已插入，并在 Windows 管理员 PowerShell 执行：" >&2
+  echo "  usbipd bind --hardware-id ${hardware_id}" >&2
+  echo "然后重新运行 ./massage；普通 attach 将由启动脚本自动完成。" >&2
+
+  if flag_enabled "${required}"; then
+    return 1
+  fi
+  echo "MASSAGE_REALSENSE_REQUIRED=0，忽略相机缺失并继续。" >&2
+  return 0
 }
 
 setup_ros_env() {
@@ -587,6 +664,26 @@ start_server() {
   return 1
 }
 
+restart_server_for_gui() {
+  echo "GUI 启动：重启 FAIRINO ROS2 控制服务..."
+  pkill -TERM -f "${SERVER_PATTERN}" >/dev/null 2>&1 || true
+  sleep 2
+  pkill -KILL -f "${SERVER_PATTERN}" >/dev/null 2>&1 || true
+  rm -f "${PID_FILE}"
+  reset_ros2_discovery
+
+  if ! start_server; then
+    echo "GUI 启动：ROS2 控制服务进程启动失败。" >&2
+    return 1
+  fi
+  if ! probe_with_retries; then
+    echo "GUI 启动：ROS2 控制服务探针失败，日志如下：" >&2
+    tail -n 100 "${ROS2_LOG}" || true
+    return 1
+  fi
+  echo "GUI 启动：ROS2 控制服务已重启并通过探针。"
+}
+
 start_moveit() {
   if [[ "${MASSAGE_MOVEIT_ENABLE}" != "1" && "${MASSAGE_MOVEIT_ENABLE}" != "true" && "${MASSAGE_MOVEIT_ENABLE}" != "yes" && "${MASSAGE_MOVEIT_ENABLE}" != "on" ]]; then
     echo "MoveIt IK 服务未启用。"
@@ -815,16 +912,78 @@ run_xiaozhi_gui() {
     return 1
   fi
 
-  cleanup_xiaozhi_gui_startup
+  if ! ensure_realsense_attached; then
+    echo "GUI 启动：RealSense 未就绪，停止启动，机械臂服务尚未重启。" >&2
+    return 1
+  fi
+
+  if ! cleanup_xiaozhi_gui_startup; then
+    echo "GUI 启动清理失败，停止启动，避免重复占用相机。" >&2
+    return 1
+  fi
+  setup_ros_env
+  if ! restart_server_for_gui; then
+    echo "GUI 启动：ROS2 控制服务重启失败，停止启动小智 GUI。" >&2
+    return 1
+  fi
+
   if home_pose_enabled "${MASSAGE_HOME_ON_GUI_START}"; then
-    start_stack
+    start_moveit
     if ! move_to_recorded_home "gui 启动回位"; then
       echo "gui 启动回位失败，停止启动小智 GUI。" >&2
       return 1
     fi
   fi
 
+  if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+    export QT_QPA_PLATFORM="${XIAOZHI_QT_QPA_PLATFORM:-xcb}"
+    export QT_SCALE_FACTOR="${XIAOZHI_QT_SCALE_FACTOR:-1.5}"
+    export QT_IM_MODULE="${XIAOZHI_QT_IM_MODULE:-fcitx}"
+    export GTK_IM_MODULE="${XIAOZHI_GTK_IM_MODULE:-fcitx}"
+    export XMODIFIERS="${XIAOZHI_XMODIFIERS:-@im=fcitx}"
+    if command -v fcitx5 >/dev/null 2>&1 && command -v dbus-launch >/dev/null 2>&1; then
+      local qt_plugin_root="${HOME}/.local/lib/massage-qt5/plugins"
+      local fcitx_qt_plugin=""
+      fcitx_qt_plugin="$(
+        dpkg-query -L fcitx5-frontend-qt5 2>/dev/null \
+          | grep -m1 '/libfcitx5platforminputcontextplugin.so$' \
+          || true
+      )"
+      if [[ -n "${fcitx_qt_plugin}" ]]; then
+        mkdir -p "${qt_plugin_root}/platforminputcontexts"
+        ln -sfn "${fcitx_qt_plugin}" \
+          "${qt_plugin_root}/platforminputcontexts/libfcitx5platforminputcontextplugin.so"
+        export QT_PLUGIN_PATH="${XIAOZHI_QT_PLUGIN_PATH:-${qt_plugin_root}}"
+      fi
+
+      local input_runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+      local dbus_env_file="${input_runtime_dir}/massage-dbus-session.env"
+      mkdir -p "${input_runtime_dir}"
+
+      if [[ -r "${dbus_env_file}" ]]; then
+        # shellcheck disable=SC1090
+        source "${dbus_env_file}"
+      fi
+      if ! dbus-send --session --dest=org.freedesktop.DBus \
+        --type=method_call --print-reply / org.freedesktop.DBus.ListNames \
+        >/dev/null 2>&1; then
+        eval "$(dbus-launch --sh-syntax)"
+        umask 077
+        {
+          printf 'export DBUS_SESSION_BUS_ADDRESS=%q\n' "${DBUS_SESSION_BUS_ADDRESS}"
+          printf 'export DBUS_SESSION_BUS_PID=%q\n' "${DBUS_SESSION_BUS_PID:-}"
+        } >"${dbus_env_file}"
+      fi
+
+      fcitx5 -d -r --keep >"${input_runtime_dir}/massage-fcitx5.log" 2>&1 || true
+      sleep 0.3
+      fcitx5-remote -r >/dev/null 2>&1 || true
+      fcitx5-remote -s pinyin >/dev/null 2>&1 || true
+    fi
+  fi
+
   cd "${XIAOZHI_DIR}"
+  export XIAOZHI_PUSH_TO_TALK_ONLY="${XIAOZHI_PUSH_TO_TALK_ONLY:-1}"
   exec "${XIAOZHI_PYTHON}" main.py --mode gui "$@"
 }
 
@@ -835,6 +994,11 @@ run_calibration() {
   fi
   if [[ ! -x "${CALIBRATION_PYTHON}" ]]; then
     echo "找不到标定 Python 环境: ${CALIBRATION_PYTHON}" >&2
+    return 1
+  fi
+
+  if ! ensure_realsense_attached; then
+    echo "标定启动：RealSense 未就绪。" >&2
     return 1
   fi
 
@@ -851,6 +1015,44 @@ run_calibration() {
   exec "${CALIBRATION_PYTHON}" "${CALIBRATION_SCRIPT}" "$@"
 }
 
+run_back_line_adjuster() {
+  if [[ ! -f "${BACK_LINE_ADJUSTER}" ]]; then
+    echo "找不到膀胱经线偏移调节程序: ${BACK_LINE_ADJUSTER}" >&2
+    return 1
+  fi
+
+  if ! ensure_realsense_attached; then
+    echo "偏移调节启动：RealSense 未就绪。" >&2
+    return 1
+  fi
+
+  setup_ros_env
+  echo "启动四条膀胱经线偏移调节画面..."
+  echo "该工具只使用相机，不会连接或移动机械臂。"
+  cd "${FAIRINO_DIR}"
+  export PYTHONUNBUFFERED=1
+  export PYTHONPATH="${FAIRINO_DIR}:${ROOT_DIR}/shared/vision:${PYTHONPATH:-}"
+  exec "${PYTHON_BIN}" "${BACK_LINE_ADJUSTER}" "$@"
+}
+
+run_force_monitor() {
+  local monitor_script="${FAIRINO_DIR}/force_monitor_gui.py"
+  if [[ ! -f "${monitor_script}" ]]; then
+    echo "找不到力传感器监视程序: ${monitor_script}" >&2
+    return 1
+  fi
+  if [[ ! -x "${XIAOZHI_PYTHON}" ]]; then
+    echo "找不到包含 PyQt5 的 Python 环境: ${XIAOZHI_PYTHON}" >&2
+    return 1
+  fi
+
+  setup_ros_env
+  echo "启动只读力传感器监视窗口..."
+  echo "接收 ft.py 已校验的力传感器读数。"
+  echo "该窗口不会发送 ROS2、机械臂或力控命令。"
+  exec "${XIAOZHI_PYTHON}" "${monitor_script}" "$@"
+}
+
 main() {
   local cmd="${1:-help}"
   if [[ "$#" -gt 0 ]]; then
@@ -858,6 +1060,10 @@ main() {
   fi
   case "${cmd}" in
     start)
+      if ! ensure_realsense_attached; then
+        echo "按摩程序启动：RealSense 未就绪，机械臂服务尚未启动。" >&2
+        exit 1
+      fi
       start_stack
       if home_pose_enabled "${MASSAGE_HOME_ON_START}"; then
         move_to_recorded_home "start 回位"
@@ -879,8 +1085,17 @@ main() {
     gui)
       run_xiaozhi_gui "$@"
       ;;
+    force-monitor)
+      run_force_monitor "$@"
+      ;;
     calibrate)
       run_calibration "$@"
+      ;;
+    adjust-lines)
+      run_back_line_adjuster "$@"
+      ;;
+    camera-check)
+      ensure_realsense_attached
       ;;
     record-home)
       setup_ros_env

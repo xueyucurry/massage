@@ -14,9 +14,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-# ===== 用户常改：三个部位按摩力度，单位 N =====
-# 直接改下面三个数字即可。
-BACK_MASSAGE_FORCE_N = "30.0"          # 背部膀胱经
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# ===== 用户常改：各部位/动作按摩力度，单位 N =====
+# 直接改下面的数字即可。
+BACK_MASSAGE_FORCE_N = "10.0"          # 背部膀胱经
+BACK_SHUN_JIN_FORCE_N = "2.0"          # 背部膀胱经顺筋
 THIGH_OUTER_MASSAGE_FORCE_N = "50.0"   # 大腿外侧
 THIGH_INNER_MASSAGE_FORCE_N = "30.0"   # 大腿内侧
 
@@ -25,6 +28,13 @@ DIAN_JIN_REPEAT_DEFAULT = "3"           # 每个按摩点执行点筋次数
 FEN_JIN_REPEAT_DEFAULT = "3"            # 每个按摩点执行分筋次数
 ROBOT_MOTION_SPEED_SCALE_DEFAULT = "2.0"  # 所有机械臂运动速度倍率
 SHUN_JIN_MOTION_SPEED_SCALE_DEFAULT = "1.0" # 顺筋动作速度倍率，1.0 为原速
+
+# ===== 用户常改：顺筋表皮保护参数 =====
+SHUN_JIN_SEGMENT_LENGTH_DEFAULT_MM = "25.0" # 单次连续接触的最大轨迹长度
+SHUN_JIN_RELEASE_LIFT_DEFAULT_MM = "4.0"    # 每段结束后的卸力抬升距离
+SHUN_JIN_RELEASE_DWELL_DEFAULT_S = "0.3"    # 抬升后等待表皮回弹时间
+SHUN_JIN_TANGENTIAL_WARN_DEFAULT_N = "2.0"  # 切向力预警值
+SHUN_JIN_TANGENTIAL_RELEASE_DEFAULT_N = "3.0" # 切向力达到该值时提前卸力
 
 # ===== 用户常改：贴近提速参数 =====
 BACK_HOVER_HEIGHT_DEFAULT_MM = "20.0"      # 背部悬空距离，越小越快，建议不低于 15
@@ -107,7 +117,7 @@ from thigh_outerline_confirm import (
 from RTMPOSE import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, ROTATIONS
 
 
-ROS2_WORKSPACE = "/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master"
+ROS2_WORKSPACE = str(SCRIPT_DIR / "fairino_ros2" / "frcobot_ros2-master")
 ROS2_SERVICE_NAME = os.environ.get("FAIRINO_REMOTE_SERVICE", "fairino_remote_command_service")
 ROS2_STATE_TOPIC = os.environ.get("FAIRINO_STATE_TOPIC", "nonrt_state_data")
 ROS2_SERVICE_WAIT_S = float(os.environ.get("ROS2_SERVICE_WAIT_S", "20.0"))
@@ -192,6 +202,9 @@ LASTTIME_ROS2_FORCE = os.environ.get("LASTTIME_ROS2_FORCE", "1").strip().lower()
 }
 
 FORCE_TARGET_N = float(os.environ.get("LASTTIME_FORCE_N", BACK_MASSAGE_FORCE_N))
+BACK_SHUN_JIN_FORCE_TARGET_N = float(
+    os.environ.get("BACK_SHUN_JIN_FORCE_N", BACK_SHUN_JIN_FORCE_N)
+)
 THIGH_OUTER_FORCE_TARGET_N = float(
     os.environ.get(
         "THIGH_OUTER_FORCE_N",
@@ -219,11 +232,34 @@ FORCE_CONTACT_OFFSET_MM = float(
 TOOL_TIP_LENGTH_MM = float(os.environ.get("LASTTIME_TOOL_TIP_LENGTH_MM", "95.0"))
 BACK_HOVER_HEIGHT_MM = float(os.environ.get("BACK_HOVER_HEIGHT_MM", BACK_HOVER_HEIGHT_DEFAULT_MM))
 BACK_MIN_DEPTH_RATIO = float(os.environ.get("BACK_MIN_DEPTH_RATIO", "0.50"))
+BACK_MIN_LINE_LENGTH_PX = float(
+    os.environ.get("BACK_MIN_LINE_LENGTH_PX", "220.0")
+)
 BACK_LINE_TRIM_NECK_RATIO = float(
     os.environ.get("BACK_LINE_TRIM_NECK_RATIO", os.environ.get("BACK_LINE_TRIM_RATIO", "0.08"))
 )
 BACK_LINE_TRIM_TAIL_RATIO = float(
-    os.environ.get("BACK_LINE_TRIM_TAIL_RATIO", os.environ.get("BACK_LINE_TRIM_RATIO", "0.04"))
+    os.environ.get("BACK_LINE_TRIM_TAIL_RATIO", os.environ.get("BACK_LINE_TRIM_RATIO", "0.10"))
+)
+BACK_LOCK_HORIZONTAL = os.environ.get("BACK_LOCK_HORIZONTAL", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+BACK_LINE_OFFSET_FILE = Path(
+    os.environ.get("BACK_LINE_OFFSET_FILE", str(SCRIPT_DIR / "back_line_offset.json"))
+)
+try:
+    with BACK_LINE_OFFSET_FILE.open("r", encoding="utf-8") as offset_file:
+        _BACK_LINE_OFFSET_CONFIG = json.load(offset_file)
+except (OSError, ValueError, TypeError):
+    _BACK_LINE_OFFSET_CONFIG = {}
+BACK_LINE_OFFSET_X_PX = float(
+    os.environ.get("BACK_LINE_OFFSET_X_PX", _BACK_LINE_OFFSET_CONFIG.get("offset_x_px", 0.0))
+)
+BACK_LINE_OFFSET_Y_PX = float(
+    os.environ.get("BACK_LINE_OFFSET_Y_PX", _BACK_LINE_OFFSET_CONFIG.get("offset_y_px", 0.0))
 )
 FORCE_FEN_LATERAL_MM = float(
     os.environ.get("LASTTIME_FORCE_FEN_LATERAL_MM", str(min(abs(FEN_JIN_LATERAL_MM), 12.0)))
@@ -282,13 +318,58 @@ FORCE_DIAN_DWELL_S = float(os.environ.get("LASTTIME_FORCE_DIAN_DWELL_S", "0.6"))
 FORCE_FEN_DWELL_S = float(os.environ.get("LASTTIME_FORCE_FEN_DWELL_S", "0.25"))
 DIAN_JIN_REPEAT_COUNT = max(1, int(os.environ.get("FT_DIAN_JIN_REPEAT_COUNT", DIAN_JIN_REPEAT_DEFAULT)))
 FEN_JIN_REPEAT_COUNT = max(1, int(os.environ.get("FT_FEN_JIN_REPEAT_COUNT", FEN_JIN_REPEAT_DEFAULT)))
-FORCE_SHUN_DWELL_S = float(os.environ.get("LASTTIME_FORCE_SHUN_DWELL_S", "0.05"))
-FORCE_SHUN_RECONTACT = os.environ.get("LASTTIME_FORCE_SHUN_RECONTACT", "1").strip().lower() in {
+FORCE_SHUN_DWELL_S = float(os.environ.get("LASTTIME_FORCE_SHUN_DWELL_S", "0.0"))
+FORCE_SHUN_RECONTACT = os.environ.get("LASTTIME_FORCE_SHUN_RECONTACT", "0").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
+FORCE_SHUN_SEGMENT_LENGTH_MM = max(
+    0.0,
+    float(
+        os.environ.get(
+            "LASTTIME_FORCE_SHUN_SEGMENT_LENGTH_MM",
+            SHUN_JIN_SEGMENT_LENGTH_DEFAULT_MM,
+        )
+    ),
+)
+FORCE_SHUN_RELEASE_LIFT_MM = max(
+    0.0,
+    float(
+        os.environ.get(
+            "LASTTIME_FORCE_SHUN_RELEASE_LIFT_MM",
+            SHUN_JIN_RELEASE_LIFT_DEFAULT_MM,
+        )
+    ),
+)
+FORCE_SHUN_RELEASE_DWELL_S = max(
+    0.0,
+    float(
+        os.environ.get(
+            "LASTTIME_FORCE_SHUN_RELEASE_DWELL_S",
+            SHUN_JIN_RELEASE_DWELL_DEFAULT_S,
+        )
+    ),
+)
+FORCE_SHUN_TANGENTIAL_WARN_N = max(
+    0.0,
+    float(
+        os.environ.get(
+            "LASTTIME_FORCE_SHUN_TANGENTIAL_WARN_N",
+            SHUN_JIN_TANGENTIAL_WARN_DEFAULT_N,
+        )
+    ),
+)
+FORCE_SHUN_TANGENTIAL_RELEASE_N = max(
+    FORCE_SHUN_TANGENTIAL_WARN_N,
+    float(
+        os.environ.get(
+            "LASTTIME_FORCE_SHUN_TANGENTIAL_RELEASE_N",
+            SHUN_JIN_TANGENTIAL_RELEASE_DEFAULT_N,
+        )
+    ),
+)
 FORCE_MONITOR_HZ = float(os.environ.get("LASTTIME_FORCE_MONITOR_HZ", "20.0"))
 FORCE_SENSOR_BUS = int(os.environ.get("LASTTIME_FORCE_SENSOR_BUS", "1"))
 FORCE_ALLOW_SKIP_ZERO = os.environ.get("LASTTIME_FORCE_ALLOW_SKIP_ZERO", "1").strip().lower() in {
@@ -305,7 +386,7 @@ FORCE_APPROACH_SPEED_MAX = float(os.environ.get("FT_APPROACH_SPEED_MAX", "100.0"
 
 
 def _scaled_force_approach_velocity(base_vel):
-    scaled = abs(float(base_vel)) * max(0.0, float(FORCE_APPROACH_SPEED_SCALE))
+    scaled = abs(float(base_vel)) * max(0.0, FORCE_APPROACH_SPEED_SCALE)
     if FORCE_APPROACH_SPEED_MAX > 0.0:
         scaled = min(scaled, float(FORCE_APPROACH_SPEED_MAX))
     return max(1.0, scaled)
@@ -438,13 +519,96 @@ def _scaled_transit_velocity(base_vel):
     return max(1.0, scaled)
 
 
+def _massage_frame_distance_mm(previous_frame, current_frame):
+    previous = previous_frame.get("point_mm") if previous_frame else None
+    current = current_frame.get("point_mm") if current_frame else None
+    if previous is None or current is None or len(previous) < 3 or len(current) < 3:
+        return 0.0
+    return math.sqrt(sum((float(current[i]) - float(previous[i])) ** 2 for i in range(3)))
+
+
+def _tangential_force_n(force_torque):
+    if force_torque is None or len(force_torque) < 2:
+        return 0.0
+    return math.hypot(float(force_torque[0]), float(force_torque[1]))
+
+
+def _normalized_vector(values, fallback):
+    vector = np.asarray(values, dtype=np.float64)
+    norm = float(np.linalg.norm(vector))
+    if norm > 1e-9:
+        return vector / norm
+    fallback_vector = np.asarray(fallback, dtype=np.float64)
+    fallback_norm = float(np.linalg.norm(fallback_vector))
+    if fallback_norm > 1e-9:
+        return fallback_vector / fallback_norm
+    return np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+
+
+def _interpolate_angle_deg(start, end, fraction):
+    delta = (float(end) - float(start) + 180.0) % 360.0 - 180.0
+    return float(start) + delta * float(fraction)
+
+
+def _interpolate_shun_frame(previous_frame, current_frame, fraction):
+    fraction = max(0.0, min(1.0, float(fraction)))
+    if fraction >= 1.0:
+        return dict(current_frame)
+
+    frame = dict(previous_frame)
+    previous_point = np.asarray(previous_frame["point_mm"], dtype=np.float64)
+    current_point = np.asarray(current_frame["point_mm"], dtype=np.float64)
+    frame["point_mm"] = (
+        previous_point + (current_point - previous_point) * fraction
+    ).tolist()
+
+    previous_tool_z = np.asarray(previous_frame["tool_z_unit"], dtype=np.float64)
+    current_tool_z = np.asarray(current_frame["tool_z_unit"], dtype=np.float64)
+    tool_z = _normalized_vector(
+        previous_tool_z + (current_tool_z - previous_tool_z) * fraction,
+        current_tool_z,
+    )
+    previous_split = np.asarray(previous_frame["split_axis_unit"], dtype=np.float64)
+    current_split = np.asarray(current_frame["split_axis_unit"], dtype=np.float64)
+    split_axis = previous_split + (current_split - previous_split) * fraction
+    split_axis = split_axis - tool_z * float(np.dot(split_axis, tool_z))
+    split_axis = _normalized_vector(split_axis, current_split)
+    frame["tool_z_unit"] = tool_z.tolist()
+    frame["split_axis_unit"] = split_axis.tolist()
+
+    previous_pose = previous_frame["base_pose"]
+    current_pose = current_frame["base_pose"]
+    frame["base_pose"] = [
+        _interpolate_angle_deg(previous_pose[i], current_pose[i], fraction)
+        for i in range(3)
+    ]
+    frame["index"] = current_frame.get("index", previous_frame.get("index", 0))
+    frame["shun_interpolated"] = True
+    frame["shun_interpolation_fraction"] = fraction
+    return frame
+
+
+def _subdivide_shun_edge(previous_frame, current_frame, max_step_mm):
+    if previous_frame is None:
+        return [current_frame]
+    distance_mm = _massage_frame_distance_mm(previous_frame, current_frame)
+    max_step_mm = float(max_step_mm)
+    if max_step_mm <= 0.0 or distance_mm <= max_step_mm:
+        return [current_frame]
+    step_count = max(1, int(math.ceil(distance_mm / max_step_mm)))
+    return [
+        _interpolate_shun_frame(previous_frame, current_frame, step_index / step_count)
+        for step_index in range(1, step_count + 1)
+    ]
+
+
 TRANSIT_MOVE_VEL_FAST = _scaled_transit_velocity(MOVE_VEL_FAST)
 TRANSIT_MOVE_VEL_SLOW = _scaled_transit_velocity(MOVE_VEL_SLOW)
 _ROBOT_MOTION_SPEED_SCALE_OVERRIDE = None
 FT_TRAJECTORY_OUTPUT_DIR = Path(
     os.environ.get(
         "FT_TRAJECTORY_OUTPUT_DIR",
-        "/home/franka/massage/robots/fairino/ft_locked_trajectory_output",
+        str(SCRIPT_DIR / "ft_locked_trajectory_output"),
     )
 )
 
@@ -579,6 +743,13 @@ def _force_target_for_massage_target(value):
     if target == "leg_inner":
         return THIGH_INNER_FORCE_TARGET_N
     return FORCE_TARGET_N
+
+
+def _force_target_for_massage_action(value, action):
+    target = _normalize_massage_target(value) or "back"
+    if target == "back" and str(action or "").strip().lower() == "shun_jin":
+        return BACK_SHUN_JIN_FORCE_TARGET_N
+    return _force_target_for_massage_target(target)
 
 
 def _thigh_offset_for_massage_target(value):
@@ -757,6 +928,21 @@ def _canonical_back_lines_from_spine(spine_line, meridian_lines=None, outer_scal
     tail_trim_px = raw_length_px * tail_trim_ratio
     center_start = raw_start + tangent * neck_trim_px
     center_end = raw_end - tangent * tail_trim_px
+    image_offset = np.asarray(
+        [BACK_LINE_OFFSET_X_PX, BACK_LINE_OFFSET_Y_PX],
+        dtype=np.float64,
+    )
+    center_start = center_start + image_offset
+    center_end = center_end + image_offset
+
+    detected_tangent = tangent.copy()
+    if BACK_LOCK_HORIZONTAL:
+        line_length_px = float(np.linalg.norm(center_end - center_start))
+        line_center = (center_start + center_end) * 0.5
+        x_direction = -1.0 if float(tangent[0]) < 0.0 else 1.0
+        tangent = np.array([x_direction, 0.0], dtype=np.float64)
+        center_start = line_center - tangent * (line_length_px * 0.5)
+        center_end = line_center + tangent * (line_length_px * 0.5)
 
     lateral_raw = None
     if meridian_lines is not None and len(meridian_lines) == 2 and meridian_lines[0] is not None and meridian_lines[1] is not None:
@@ -818,6 +1004,15 @@ def _canonical_back_lines_from_spine(spine_line, meridian_lines=None, outer_scal
         "tail_trim_px": tail_trim_px,
         "neck_trim_ratio": neck_trim_ratio,
         "tail_trim_ratio": tail_trim_ratio,
+        "offset_x_px": float(image_offset[0]),
+        "offset_y_px": float(image_offset[1]),
+        "detected_angle_deg": math.degrees(
+            math.atan2(float(detected_tangent[1]), float(detected_tangent[0]))
+        ),
+        "output_angle_deg": math.degrees(
+            math.atan2(float(tangent[1]), float(tangent[0]))
+        ),
+        "horizontal_locked": bool(BACK_LOCK_HORIZONTAL),
     }
     return canonical_spine, canonical_inner, canonical_outer, meta
 
@@ -1577,6 +1772,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         self.force_controller = None
         self.massage_target = _normalize_massage_target(massage_target) or "back"
         self.camera_to_robot = None
+        self.back_line_meta = {}
         self.force_target_n = float(_force_target_for_massage_target(self.massage_target))
         if _is_thigh_target(self.massage_target):
             self.hover_height_mm = float(THIGH_HOVER_HEIGHT_MM)
@@ -1709,6 +1905,12 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             return analysis
 
         updated = dict(analysis)
+        if updated.get("back_lines_canonical"):
+            meta = updated.get("back_line_meta") or {}
+            if meta:
+                self.back_line_meta = dict(meta)
+            return updated
+
         spine_line, meridian_lines, outer_meridian_lines, meta = _canonical_back_lines_from_spine(
             updated.get("spine_line"),
             updated.get("meridian_lines"),
@@ -1721,13 +1923,21 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         updated["meridian_lines"] = meridian_lines
         updated["outer_meridian_lines"] = outer_meridian_lines
         updated["back_line_meta"] = meta or {}
+        updated["back_lines_canonical"] = True
+        self.back_line_meta = dict(updated["back_line_meta"])
         return updated
 
     def _analyze_visual_frame(self, img):
         return self._canonicalize_back_analysis(super()._analyze_visual_frame(img))
 
     def _locked_analysis(self):
-        return self._canonicalize_back_analysis(super()._locked_analysis())
+        analysis = super()._locked_analysis()
+        if self.massage_target != "back":
+            return analysis
+        analysis = dict(analysis)
+        analysis["back_lines_canonical"] = True
+        analysis["back_line_meta"] = dict(getattr(self, "back_line_meta", {}) or {})
+        return analysis
 
     def _attach_back_depth_samples(self, analysis, depth_frame, require_depth=True):
         if self.massage_target != "back" or analysis is None:
@@ -1735,6 +1945,18 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
         updated = self._canonicalize_back_analysis(analysis)
         outer_lines = updated.get("outer_meridian_lines")
+        line_meta = updated.get("back_line_meta") or {}
+        line_length_px = float(line_meta.get("line_length_px") or 0.0)
+        geometry_valid = line_length_px >= BACK_MIN_LINE_LENGTH_PX
+        updated["back_geometry_valid"] = geometry_valid
+        updated["back_geometry_reason"] = (
+            None
+            if geometry_valid
+            else (
+                f"line-too-short:{line_length_px:.1f}px"
+                f"<{BACK_MIN_LINE_LENGTH_PX:.1f}px"
+            )
+        )
         if not outer_lines:
             updated["back_sample_pixels"] = []
             updated["back_sample_depths"] = []
@@ -1764,9 +1986,13 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         updated["back_sample_pixels"] = sample_pixels
         updated["back_sample_depths"] = depths
         updated["back_depth_valid_ratio"] = valid_ratio
-        if require_depth and valid_ratio < BACK_MIN_DEPTH_RATIO:
-            updated["visual_motion_ready"] = False
-            updated["visual_status"] = "depth"
+        if require_depth:
+            if not geometry_valid:
+                updated["visual_motion_ready"] = False
+                updated["visual_status"] = "geometry"
+            elif valid_ratio < BACK_MIN_DEPTH_RATIO:
+                updated["visual_motion_ready"] = False
+                updated["visual_status"] = "depth"
         return updated
 
     def _draw_detection_overlay(self, img, analysis):
@@ -2132,6 +2358,58 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
     def _force_axis_value(self, data):
         return FORCE_AXIS_SIGN * float(data[2])
 
+    def _check_shun_tangential_force(self, context):
+        if self.force_controller is None:
+            return 0.0, False
+        data = self.force_controller.check_limits(context)
+        tangent_n = math.hypot(float(data[0]), float(data[1]))
+        release_requested = (
+            FORCE_SHUN_TANGENTIAL_RELEASE_N > 0.0
+            and tangent_n >= FORCE_SHUN_TANGENTIAL_RELEASE_N
+        )
+        if release_requested:
+            print(
+                f"[Force] {context}: 顺筋切向力达到卸力阈值 "
+                f"Ft={tangent_n:.2f}N >= {FORCE_SHUN_TANGENTIAL_RELEASE_N:.2f}N"
+            )
+        elif FORCE_SHUN_TANGENTIAL_WARN_N > 0.0 and tangent_n >= FORCE_SHUN_TANGENTIAL_WARN_N:
+            print(
+                f"[Force] {context}: 顺筋切向力预警 "
+                f"Ft={tangent_n:.2f}N >= {FORCE_SHUN_TANGENTIAL_WARN_N:.2f}N"
+            )
+        return tangent_n, release_requested
+
+    def _release_shun_contact(self, frame, contact_offset_mm, context):
+        lift_mm = max(0.0, float(FORCE_SHUN_RELEASE_LIFT_MM))
+        hover_offset = -float(self.hover_height_mm)
+        release_offset = max(
+            hover_offset,
+            float(contact_offset_mm) - lift_mm,
+        )
+        release_pose = self._pose_from_frame_offset(frame, release_offset)
+        if not self._move_force_pose_checked(
+            release_pose,
+            f"{context} 卸力 {lift_mm:.1f}mm",
+            MOVE_VEL_SLOW,
+        ):
+            return release_offset, False
+        if FORCE_SHUN_RELEASE_DWELL_S > 0.0:
+            time.sleep(FORCE_SHUN_RELEASE_DWELL_S)
+        self.force_controller.check_limits(f"{context} 卸力后检查")
+        print(
+            f"[Force] {context}: 已抬升 "
+            f"{float(contact_offset_mm) - release_offset:.1f}mm，"
+            f"等待 {FORCE_SHUN_RELEASE_DWELL_S:.2f}s"
+        )
+        return release_offset, True
+
+    def _recontact_shun_after_release(self, frame, release_offset_mm, context):
+        return self._approach_to_target_force(
+            frame,
+            f"{context} 重新贴合",
+            start_offset_mm=release_offset_mm,
+        )
+
     def _read_force_axis(self, context):
         if self.force_controller is None:
             raise RuntimeError("力传感器未初始化")
@@ -2217,11 +2495,16 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         contact_step = min(step, max(0.05, abs(float(FORCE_APPROACH_CONTACT_STEP_MM))))
         fine_step = min(step, max(0.05, abs(float(FORCE_APPROACH_FINE_STEP_MM))))
         near_step = min(fine_step, max(0.05, abs(float(FORCE_APPROACH_NEAR_STEP_MM))))
+        contact_threshold_n = max(0.1, abs(float(FORCE_APPROACH_CONTACT_N)))
+        approach_vel = abs(float(FORCE_APPROACH_VEL))
+        contact_vel = max(
+            1.0,
+            min(approach_vel, abs(float(FORCE_APPROACH_CONTACT_VEL))),
+        )
+        fine_vel = max(1.0, min(approach_vel, abs(float(FORCE_APPROACH_FINE_VEL))))
+        near_vel = max(1.0, min(fine_vel, abs(float(FORCE_APPROACH_NEAR_VEL))))
         fine_ratio = max(0.0, min(1.0, float(FORCE_APPROACH_FINE_RATIO)))
         near_ratio = max(fine_ratio, min(1.0, float(FORCE_APPROACH_NEAR_RATIO)))
-        contact_vel = max(1.0, min(abs(float(FORCE_APPROACH_VEL)), abs(float(FORCE_APPROACH_CONTACT_VEL))))
-        fine_vel = max(1.0, min(abs(float(FORCE_APPROACH_VEL)), abs(float(FORCE_APPROACH_FINE_VEL))))
-        near_vel = max(1.0, min(fine_vel, abs(float(FORCE_APPROACH_NEAR_VEL))))
         last_print = 0.0
 
         start_text = "从悬空位沿法向贴近" if start_offset_mm is None else "沿法向补偿贴近"
@@ -2235,7 +2518,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             precontact_offset = min(max_offset, -precontact_clearance)
             if precontact_offset > offset:
                 force_n, data = self._read_force_axis(f"{context} 预贴近检查")
-                if force_n >= max(0.1, abs(float(FORCE_APPROACH_CONTACT_N))):
+                if force_n >= contact_threshold_n:
                     print(
                         f"[Force] {context}: 悬空段已检测到接触力 "
                         f"press={force_n:.2f}N，跳过连续预贴近"
@@ -2287,9 +2570,9 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 return offset, False
 
             move_step = step
-            move_vel = abs(float(FORCE_APPROACH_VEL))
+            move_vel = approach_vel
             settle_s = float(FORCE_APPROACH_SETTLE_S)
-            if force_n >= max(0.1, abs(float(FORCE_APPROACH_CONTACT_N))):
+            if force_n >= contact_threshold_n:
                 move_step = contact_step
                 move_vel = contact_vel
                 settle_s = max(settle_s, 0.10)
@@ -3619,7 +3902,10 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         if not FT_CONTINUE_ON_POINT_ERROR:
                             return False
                         continue
-                    offset, reached = self._approach_to_target_force(start_frame, f"顺筋起点 点{point_no}")
+                    offset, reached = self._approach_to_target_force(
+                        start_frame,
+                        f"顺筋起点 点{point_no}",
+                    )
                     if reached:
                         start_index = candidate_index
                         break
@@ -3639,17 +3925,94 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             ok = True
             moved_count = 0
             skipped_points = []
+            safety_abort = False
+            previous_contact_frame = None
             try:
                 for local_i, frame in enumerate(frames[start_index:]):
-                    point_no = int(frame.get("index", start_index + local_i)) + 1
+                    frame_index = start_index + local_i
+                    point_no = int(frame.get("index", frame_index)) + 1
+                    has_next_frame = frame_index + 1 < len(frames)
                     self.update_preview_status("顺筋", frame.get("index", point_no - 1))
                     print(f"  移动到点{point_no}...")
-                    last_hover_pose = self._pose_from_frame_offset(frame, -self.hover_height_mm)
-                    pose = self._pose_from_frame_offset(frame, offset)
-                    if not self._move_force_pose_checked(pose, f"顺筋移动 点{point_no}"):
+                    motion_frames = _subdivide_shun_edge(
+                        previous_contact_frame,
+                        frame,
+                        FORCE_SHUN_SEGMENT_LENGTH_MM,
+                    )
+                    motion_failed = False
+                    for substep_index, motion_frame in enumerate(motion_frames):
+                        substep_no = substep_index + 1
+                        substep_count = len(motion_frames)
+                        last_hover_pose = self._pose_from_frame_offset(
+                            motion_frame,
+                            -self.hover_height_mm,
+                        )
+                        pose = self._pose_from_frame_offset(motion_frame, offset)
+                        move_context = (
+                            f"顺筋移动 点{point_no}"
+                            if substep_count == 1
+                            else f"顺筋移动 点{point_no} 子段{substep_no}/{substep_count}"
+                        )
+                        if not self._move_force_pose_checked(pose, move_context):
+                            motion_failed = True
+                            break
+
+                        tangent_n, tangent_release = self._check_shun_tangential_force(
+                            f"顺筋切向力检查 点{point_no} 子段{substep_no}/{substep_count}"
+                        )
+                        has_more_contact_motion = substep_no < substep_count or has_next_frame
+                        segment_release = (
+                            previous_contact_frame is not None
+                            and has_more_contact_motion
+                            and FORCE_SHUN_SEGMENT_LENGTH_MM > 0.0
+                            and FORCE_SHUN_RELEASE_LIFT_MM > 0.0
+                        )
+                        if tangent_release and not has_more_contact_motion:
+                            print(
+                                f"    警告：顺筋末段切向力 {tangent_n:.2f}N 超限，"
+                                "立即结束并返回悬空位"
+                            )
+                            safety_abort = True
+                            motion_failed = True
+                            break
+                        if has_more_contact_motion and (segment_release or tangent_release):
+                            if tangent_release:
+                                reason = f"切向力 {tangent_n:.2f}N 超限"
+                            else:
+                                reason = (
+                                    f"接触子段完成（上限 {FORCE_SHUN_SEGMENT_LENGTH_MM:.1f}mm）"
+                                )
+                            print(
+                                f"  顺筋点{point_no} 子段{substep_no}/{substep_count}"
+                                f"触发卸力：{reason}"
+                            )
+                            release_offset, release_ok = self._release_shun_contact(
+                                motion_frame,
+                                offset,
+                                f"顺筋分段 点{point_no} 子段{substep_no}/{substep_count}",
+                            )
+                            if not release_ok:
+                                safety_abort = True
+                                motion_failed = True
+                                break
+                            offset, reached = self._recontact_shun_after_release(
+                                motion_frame,
+                                release_offset,
+                                f"顺筋下一段起点 点{point_no} 子段{substep_no}/{substep_count}",
+                            )
+                            if not reached:
+                                print(
+                                    f"    警告：顺筋点{point_no} 子段{substep_no}/{substep_count}"
+                                    "卸力后未重新达到目标力"
+                                )
+                                safety_abort = True
+                                motion_failed = True
+                                break
+
+                    if motion_failed:
                         skipped_points.append(point_no)
                         ok = False
-                        if not FT_CONTINUE_ON_POINT_ERROR:
+                        if safety_abort or not FT_CONTINUE_ON_POINT_ERROR:
                             break
                         print(f"    警告：顺筋点{point_no}移动失败，跳过该点继续")
                         continue
@@ -3681,12 +4044,13 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         print(f"    警告：顺筋点{point_no}保压失败，跳过该点继续")
                         continue
                     moved_count += 1
+                    previous_contact_frame = frame
                 if skipped_points:
                     print(f"    警告：顺筋跳过点: {skipped_points}")
                 if moved_count <= 0:
                     print("    警告：顺筋没有完成任何候选点")
                     ok = False
-                if FT_CONTINUE_ON_POINT_ERROR and skipped_points:
+                if FT_CONTINUE_ON_POINT_ERROR and skipped_points and not safety_abort:
                     ok = True
             except Exception as exc:
                 print(f"    警告：顺筋力控失败 ({exc})")
@@ -3739,6 +4103,10 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 return False
 
             if LASTTIME_ROS2_FORCE:
+                self.set_force_target_n(
+                    _force_target_for_massage_action(self.massage_target, "point_actions"),
+                    context="点筋/分筋目标力",
+                )
                 print(f"初始化 {self.force_target_n:.1f}N 恒力控制（请确认末端悬空无接触）...")
                 self.init_force_controller()
 
@@ -3790,6 +4158,10 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             if not shun_candidate_frames:
                 print(f"[容错] 没有{point_action_text}/分筋阶段确认可达的悬空点，顺筋将尝试原始轨迹")
 
+            self.set_force_target_n(
+                _force_target_for_massage_action(self.massage_target, "shun_jin"),
+                context="顺筋目标力",
+            )
             print("\n回到起点...")
             shun_first_frame = shun_frames[0]
             shun_first_pose = self._pose_from_frame_offset(shun_first_frame, -self.hover_height_mm)
@@ -3898,7 +4270,9 @@ def main():
     else:
         print(
             f"  背部膀胱经线段缩短: neck={BACK_LINE_TRIM_NECK_RATIO * 100:.1f}% "
-            f"tail={BACK_LINE_TRIM_TAIL_RATIO * 100:.1f}%"
+            f"tail={BACK_LINE_TRIM_TAIL_RATIO * 100:.1f}% "
+            f"offset=({BACK_LINE_OFFSET_X_PX:+.1f}, {BACK_LINE_OFFSET_Y_PX:+.1f})px "
+            f"horizontal_lock={'on' if BACK_LOCK_HORIZONTAL else 'off'}"
         )
     print(f"  演示预览窗口: {'开启（实时跟踪，仅展示）' if ENABLE_LIVE_PREVIEW_WINDOW else '关闭'}")
     print(f"  工具/工件坐标系: tool={ROS2_TOOL}, user={ROS2_USER}")
@@ -3912,6 +4286,13 @@ def main():
     print(
         f"  单点失败容错: {'开启' if FT_CONTINUE_ON_POINT_ERROR else '关闭'} "
         f"shun_min_points={FT_SHUN_MIN_POINTS}"
+    )
+    print(
+        f"  顺筋表皮保护: segment={FORCE_SHUN_SEGMENT_LENGTH_MM:.1f}mm "
+        f"lift={FORCE_SHUN_RELEASE_LIFT_MM:.1f}mm "
+        f"release_wait={FORCE_SHUN_RELEASE_DWELL_S:.2f}s "
+        f"tangent_warn={FORCE_SHUN_TANGENTIAL_WARN_N:.1f}N "
+        f"tangent_release={FORCE_SHUN_TANGENTIAL_RELEASE_N:.1f}N"
     )
     print(
         f"  MoveIt IK兜底: {'开启' if MOVEIT_IK_ENABLE and MOVEIT_JOINT_FALLBACK else '关闭'} "

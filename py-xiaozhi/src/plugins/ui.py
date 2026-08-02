@@ -161,6 +161,14 @@ class UIPlugin(Plugin):
         """
         发送文本到服务端.
         """
+        self.app.authorize_user_interaction("text-input")
+        if hasattr(self.app, "dispatch_local_critical_massage_command"):
+            self.app.spawn(
+                self.app.dispatch_local_critical_massage_command(
+                    text, "text-input"
+                ),
+                "local-safety:text-input",
+            )
         if self.app.device_state == DeviceState.SPEAKING:
             audio_plugin = self.app.plugins.get_plugin("audio")
             if audio_plugin:

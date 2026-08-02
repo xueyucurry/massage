@@ -33,13 +33,13 @@ class FairinoMassageToolsManager:
             add_tool(
                 (
                     "self.fairino_massage.detect",
-                    "【FAIRINO经络检测】用户说“检测背部经络、检测旁光经、进行背部检测、检测大腿外侧、检测大腿内侧、重新检测轨迹”时必须调用本工具。"
-                    "语音播报限制：涉及背部经络时一律口播“旁光经”，不要使用其他写法，避免TTS读错。"
+                    "【FAIRINO经络检测】用户说“检测背部经络、检测膀胱经、检测庞光经、进行背部检测、检测大腿外侧、检测大腿内侧、重新检测轨迹”时必须调用本工具。"
+                    "语音播报限制：涉及背部经络时一律口播“庞光经”（读音 pang guang jing），不要使用“膀胱经”或“旁光经”，避免TTS读成 bang guang jing。"
                     "功能：后台启动经络/部位检测，默认打开检测画面，检测稳定后保存轨迹并记录当前会话。"
                     "检测成功保存轨迹后，客户端会自动请求小智调用 self.fairino_massage.status 检查检测状态，并播报检测完成和轨迹保存结果。"
                     "工具返回 success=true 仅表示检测任务已启动；应回复用户正在检测，不要判定为失败。"
                     "用户追问检测好了没有、检测状态、轨迹保存了吗时必须调用 self.fairino_massage.status，不要凭记忆回答。"
-                    "target 可取 back(背部旁光经)、leg(大腿外侧)、leg_inner(大腿内侧)。",
+                    "target 可取 back(背部庞光经)、leg(大腿外侧)、leg_inner(大腿内侧)。",
                     detect_props,
                     detect_meridian,
                 )
@@ -154,7 +154,8 @@ class FairinoMassageToolsManager:
             add_tool(
                 (
                     "self.fairino_massage.stop",
-                    "【FAIRINO停止按摩】当用户说停止按摩、结束按摩、停止机械臂按摩时调用。"
+                    "【FAIRINO停止按摩】用户明确说停止按摩、结束按摩、停止机械臂按摩、立即停止、停下来时必须立即调用本工具。"
+                    "不得只用自然语言回复已停止，也不得改调用 pause/resume/status/start。"
                     "功能：请求执行器停止当前按摩任务，先退回当前按摩点贴近前的悬空位，再回到已记录的起始位置，并保存停止状态。紧急情况仍应使用物理急停。",
                     PropertyList([]),
                     stop_massage,
@@ -166,7 +167,7 @@ class FairinoMassageToolsManager:
                     "self.fairino_massage.status",
                     "【FAIRINO检测/按摩状态】用户询问“检测状态、检测好了没有、轨迹保存了吗、按摩状态、现在到哪里了、是否暂停、当前轨迹”时必须调用本工具。"
                     "必须以工具返回的 status/stage/current_point_index/progress 为准，不能编造进度。"
-                    "语音播报限制：如果涉及背部经络，一律口播“旁光经”，不要使用其他写法。"
+                    "语音播报限制：如果涉及背部经络，一律口播“庞光经”（读音 pang guang jing），不要使用“膀胱经”或“旁光经”。"
                     "功能：返回当前会话、轨迹、动作阶段、点位进度、机械臂位姿和状态文件路径。",
                     PropertyList([]),
                     get_status,

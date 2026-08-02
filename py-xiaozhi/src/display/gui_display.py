@@ -31,7 +31,7 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
 
     # 常量定义
     EMOTION_EXTENSIONS = (".gif", ".png", ".jpg", ".jpeg", ".webp")
-    DEFAULT_WINDOW_SIZE = (880, 560)
+    DEFAULT_WINDOW_SIZE = (920, 560)
     DEFAULT_FONT_SIZE = 12
     QUIT_TIMEOUT_MS = 3000
 
@@ -265,10 +265,20 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
             screen_height = screen_rect.height()
 
             # 根据模式计算窗口大小
+            supported_modes = {"default", "screen_75", "screen_100"}
+            if window_size_mode not in supported_modes:
+                window_size_mode = "default"
+
             if window_size_mode == "default":
-                # 默认使用 50%
-                width = int(screen_width * 0.5)
-                height = int(screen_height * 0.5)
+                # 匹配 QML 设计画布，仅在小屏幕上等比缩小。
+                design_width, design_height = self.DEFAULT_WINDOW_SIZE
+                scale = min(
+                    1.0,
+                    screen_width / design_width,
+                    screen_height / design_height,
+                )
+                width = max(1, int(round(design_width * scale)))
+                height = max(1, int(round(design_height * scale)))
                 is_fullscreen = False
             elif window_size_mode == "screen_75":
                 width = int(screen_width * 0.75)
@@ -279,26 +289,11 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
                 width = screen_width
                 height = screen_height
                 is_fullscreen = True
-            else:
-                # 未知模式使用 50%
-                width = int(screen_width * 0.5)
-                height = int(screen_height * 0.5)
-                is_fullscreen = False
-
             return ((width, height), is_fullscreen)
 
         except Exception as e:
             self.logger.error(f"计算窗口大小失败: {e}", exc_info=True)
-            # 错误时返回屏幕 50%
-            try:
-                desktop = QApplication.desktop()
-                screen_rect = desktop.availableGeometry()
-                return (
-                    (int(screen_rect.width() * 0.5), int(screen_rect.height() * 0.5)),
-                    False,
-                )
-            except Exception:
-                return (self.DEFAULT_WINDOW_SIZE, False)
+            return (self.DEFAULT_WINDOW_SIZE, False)
 
     def _load_qml(self):
         """

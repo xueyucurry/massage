@@ -736,6 +736,16 @@ Rectangle {
                     }
 
                     Button {
+                        id: quickShunJin
+                        Layout.preferredWidth: 96
+                        Layout.preferredHeight: 30
+                        text: "顺筋按摩"
+                        background: Rectangle { color: quickShunJin.pressed ? "#d7f0eb" : (quickShunJin.hovered ? "#e8f8f4" : "#eef8f5"); radius: 8; border.color: "#bfe5db" }
+                        contentItem: Text { text: quickShunJin.text; font.pixelSize: 12; color: "#0b6b5e"; font.family: "PingFang SC, Microsoft YaHei UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: root.quickCommand("开始顺筋")
+                    }
+
+                    Button {
                         id: quickPause
                         Layout.preferredWidth: 84
                         Layout.preferredHeight: 30

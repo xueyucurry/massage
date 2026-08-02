@@ -328,14 +328,16 @@ class LastTimeDemo:
                     body_offset_px = float(spine_seed["body_offset_px"])
 
                     if self.tracker.available:
-                        if (self.frame_idx - self.tracker.last_seed_frame_idx
-                            >= self.tracker.reseed_interval):
-                            self.tracker.seed(
+                        if self.tracker.should_reseed(self.frame_idx):
+                            tracker_result = self.tracker.seed(
                                 img, spine_seed["spine_line"],
                                 lateral_direction_2d, body_offset_px, self.frame_idx
                             )
                         else:
-                            self.tracker.update(img, self.frame_idx)
+                            tracker_result = self.tracker.update(
+                                img,
+                                self.frame_idx,
+                            )
 
                     neck_l = (neck_u - lateral_direction_2d[0] * body_offset_px,
                              neck_v - lateral_direction_2d[1] * body_offset_px)
@@ -350,22 +352,26 @@ class LastTimeDemo:
                     meridian_lines = ((neck_l, tail_l), (neck_r, tail_r))
                     line_source = "pose"
 
+        if not detected:
+            self.smoother.miss()
+            tracker_result = self.tracker.update(
+                img,
+                self.frame_idx,
+            )
+
         tracker_reliable = False
         if tracker_result is not None:
             tracker_vis_ratio = float(tracker_result.get("visible_ratio", 0.0))
             tracker_reliable = tracker_vis_ratio >= 0.35
 
-            if tracker_result.get("spine_line") is not None:
-                spine_line = tracker_result["spine_line"]
-
             if not detected and tracker_reliable:
-                if tracker_result.get("meridian_lines") is not None:
+                if (
+                    tracker_result.get("spine_line") is not None
+                    and tracker_result.get("meridian_lines") is not None
+                ):
+                    spine_line = tracker_result["spine_line"]
                     meridian_lines = tracker_result["meridian_lines"]
                     line_source = "tracker"
-            elif meridian_lines is None and tracker_reliable:
-                if tracker_result.get("meridian_lines") is not None:
-                    meridian_lines = tracker_result["meridian_lines"]
-                    line_source = "tracker_fallback"
 
         stable_track = self.stabilizer.update(
             meridian_lines=meridian_lines,
@@ -374,6 +380,7 @@ class LastTimeDemo:
             tracker_vis_ratio=tracker_vis_ratio,
         )
 
+        spine_line = stable_track["spine_line"]
         meridian_lines = stable_track["meridian_lines"]
         visual_ready = bool(stable_track["ready"])
         visual_status = str(stable_track["status"])
