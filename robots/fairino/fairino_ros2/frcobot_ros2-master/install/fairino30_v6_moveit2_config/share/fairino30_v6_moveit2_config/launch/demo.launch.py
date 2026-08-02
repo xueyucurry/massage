@@ -1,1 +1,0 @@
-/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master/fairino30_v6_moveit2_config/launch/demo.launch.py

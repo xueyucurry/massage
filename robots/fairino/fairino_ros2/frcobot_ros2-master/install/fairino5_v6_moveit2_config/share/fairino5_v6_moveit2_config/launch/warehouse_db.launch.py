@@ -1,1 +1,0 @@
-/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master/fairino5_v6_moveit2_config/launch/warehouse_db.launch.py

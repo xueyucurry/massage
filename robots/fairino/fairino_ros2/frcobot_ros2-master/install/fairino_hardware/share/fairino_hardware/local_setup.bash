@@ -1,1 +1,0 @@
-/home/franka/massage/robots/fairino/fairino_ros2/frcobot_ros2-master/build/fairino_hardware/ament_cmake_environment_hooks/local_setup.bash
