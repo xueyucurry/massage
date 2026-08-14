@@ -106,6 +106,8 @@ public:
     std::string MoveC(std::string para);
     std::string Circle(std::string para);
     std::string ServoJ(std::string para);
+    std::string ServoCartSmooth(std::string para);
+    std::string ServoCartForceApproach(std::string para);
     std::string SplineStart(std::string para);
     std::string SplinePTP(std::string para);
     std::string SplineEnd(std::string para);
@@ -276,6 +278,8 @@ private:
     {"MoveC",&robot_command_thread::MoveC},
     {"Circle",&robot_command_thread::Circle},
     {"ServoJ",&robot_command_thread::ServoJ},
+    {"ServoCartSmooth",&robot_command_thread::ServoCartSmooth},
+    {"ServoCartForceApproach",&robot_command_thread::ServoCartForceApproach},
     {"SplineStart",&robot_command_thread::SplineStart},
     {"SplinePTP",&robot_command_thread::SplinePTP},
     {"SplineEnd",&robot_command_thread::SplineEnd},

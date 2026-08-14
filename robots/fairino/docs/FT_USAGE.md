@@ -343,12 +343,23 @@ JSON 主要字段：
 | `ROBOT_USER_ID` | `0` | FAIRINO 工件坐标系编号 |
 | `ROS2_LIFT_SAFE_Z_MM` | `INIT_SAFE_Z_MM` | 安全高度 Z |
 | `ROS2_USE_LEGACY_SAFE_POSE` | `0` | `1` 使用旧 P24 安全位；`0` 在当前位置竖直抬升 |
-| `FT_KEEP_CURRENT_ORIENTATION` | `0` | `1` 保持当前 TCP 姿态；`0` 使用局部深度平面法向 |
+| `FT_KEEP_CURRENT_ORIENTATION` | `0`（启动脚本为 `1`） | `1` 保持当前 TCP 姿态并沿实际工具 Z 轴贴近；`0` 使用局部深度平面法向。兼容旧变量 `LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION` |
 | `FT_TRANSIT_SPEED_SCALE` | `2.0` | 安全转场速度缩放 |
 | `FT_TRANSIT_SPEED_MAX` | `100.0` | 安全转场速度上限 |
 | `FT_ROBOT_MOTION_SPEED_SCALE` | `2.0` | 最终发送到 `SetSpeed`、`MoveJ`、`MoveL` 的机械臂速度倍率，限幅到 100 |
+| `FT_SERVO_INTERPOLATION` | `1` | 力控短距离运动使用控制服务内的笛卡尔五次插值；失败时自动回退原 `MoveCart` |
+| `FT_SERVO_INTERPOLATION_HZ` | `125.0` | 插值指令频率，默认与 8 ms 伺服周期对齐 |
+| `FT_SERVO_MIN_SAMPLES` | `8` | 每次短距离插值最少采样数 |
+| `FT_SERVO_MAX_DISTANCE_MM` | `30.0` | 使用插值的最大平移距离；更长的安全转场保持原 `MoveCart` |
+| `FT_SERVO_MAX_ORIENTATION_DEG` | `15.0` | 使用插值的最大单轴姿态变化；更大的姿态变化保持原 `MoveCart` |
+| `FT_SERVO_LINEAR_SPEED_MM_S_AT_100` | `1000.0` | 将原速度百分比换算为插值时长所用的 100% 线速度基准 |
+| `FT_SERVO_ANGULAR_SPEED_DEG_S_AT_100` | `180.0` | 将原速度百分比换算为插值时长所用的 100% 角速度基准 |
 | `ROS2_SEGMENT_MAX_STEP_MM` | `50.0` | 分段转场最大步长 |
 | `ROS2_SEGMENT_TIMEOUT_S` | `180.0` | 分段转场总超时 |
+| `ROS2_MOTION_DONE_STABLE_SAMPLES` | `2` | 到位需连续满足“新状态、实际位姿、完成标志”的反馈帧数 |
+| `ROS2_MOTION_DONE_TOL_FRACTION` | `0.25` | 短步进到位容差不超过本次位移的比例，防止小步被旧位置误判为已到位 |
+| `LASTTIME_FORCE_APPROACH_MAX_OFFSET_MM` | `35.0` | 背部视觉表面之后允许继续搜索接触的最大距离 |
+| `THIGH_FORCE_APPROACH_MAX_OFFSET_MM` | `35.0` | 大腿视觉表面之后允许继续搜索接触的最大距离 |
 
 ### 部位和轨迹
 
@@ -389,6 +400,17 @@ JSON 主要字段：
 | `LASTTIME_FORCE_APPROACH_CONTACT_STEP_MM` | `0.3` | 接触后步长；启动脚本默认覆盖为 `0.6` |
 | `LASTTIME_FORCE_APPROACH_FINE_STEP_MM` | `0.6` | 接近目标力时的细步长；启动脚本默认覆盖为 `1.0` |
 | `LASTTIME_FORCE_APPROACH_NEAR_STEP_MM` | `0.3` | 更接近目标力时的近端步长；启动脚本默认覆盖为 `0.5` |
+| `FT_CONTINUOUS_FORCE_APPROACH` | `1` | 使用一个不间断的 ServoMove 会话完成力感知贴近；设为 `0` 才使用旧分步贴近 |
+| `FT_CONTINUOUS_FORCE_APPROACH_HZ` | `125.0` | 连续贴近指令频率，默认与 8 ms 伺服周期对齐 |
+| `FT_CONTINUOUS_FORCE_COARSE_SPEED_MM_S` | `18.0` | 未接触时的连续贴近速度 |
+| `FT_CONTINUOUS_FORCE_CONTACT_SPEED_MM_S` | `4.0` | 检测到接触后的连续贴近速度 |
+| `FT_CONTINUOUS_FORCE_FINE_SPEED_MM_S` | `4.0` | 接近目标力时的连续贴近速度 |
+| `FT_CONTINUOUS_FORCE_NEAR_SPEED_MM_S` | `3.0` | 非常接近目标力时的连续贴近速度 |
+| `FT_CONTINUOUS_FORCE_ACCEL_MM_S2` | `120.0` | 连续贴近加速度上限 |
+| `FT_CONTINUOUS_FORCE_DECEL_MM_S2` | `240.0` | 连续贴近减速度上限 |
+| `FT_CONTINUOUS_FORCE_FILTER_ALPHA` | `0.35` | 仅用于速度分段的力值 EMA 系数；原始力仍用于目标和安全判定 |
+| `FT_CONTINUOUS_FORCE_TARGET_STABLE_SAMPLES` | `2` | 达到目标力所需连续原始采样数 |
+| `FT_CONTINUOUS_FORCE_TIMEOUT_S` | `20.0` | 单次连续贴近超时；超时和安全故障不会回退 `MoveCart` |
 | `LASTTIME_FORCE_HOLD_KP_MM_PER_N` | `0.04` | 保压微调比例；启动脚本默认覆盖为 `0.02` |
 | `LASTTIME_FORCE_HOLD_MAX_STEP_MM` | `0.15` | 单次保压微调最大位移；启动脚本默认覆盖为 `0.08` |
 | `LASTTIME_FORCE_SHUN_RECONTACT` | `1` | 顺筋每个轨迹点是否按目标力重新贴合，避免末端点悬空 |

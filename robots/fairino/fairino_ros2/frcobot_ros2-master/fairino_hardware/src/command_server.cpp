@@ -1,8 +1,13 @@
 #include "fairino_hardware/command_server.hpp"
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <algorithm>
+#include <thread>
 #include <vector>
 #include "fairino_hardware/version_control.h"
 
@@ -1770,6 +1775,428 @@ std::string robot_command_thread::ServoJ(std::string para){
 
     int deltaT = std::stod(datalist.front().c_str());
     return std::to_string(_ptr_robot->ServoJ(&jpos,&eaxispos,0,0,deltaT,0,0));
+}
+
+
+/**
+ * @brief 在控制服务内部按固定频率对笛卡尔目标做五次时间插值。
+ * @param [in] para - x,y,z,rx,ry,rz,duration_s,frequency_hz
+ *
+ * 该接口故意保持为一次阻塞式 ROS service 调用：上层按摩流程仍然是一条目标
+ * 完成后再进行力检查，只把原先控制器内部不可见的点到点运动替换为均匀伺服流。
+ */
+std::string robot_command_thread::ServoCartSmooth(std::string para){
+    std::vector<std::string> values;
+    _splitString2Vec(para,values);
+    if(values.size() != 8){
+        throw std::logic_error("ServoCartSmooth expects 8 parameters");
+    }
+
+    DescPose target{
+        std::stod(values[0]),
+        std::stod(values[1]),
+        std::stod(values[2]),
+        std::stod(values[3]),
+        std::stod(values[4]),
+        std::stod(values[5]),
+    };
+    const double requested_duration_s = std::stod(values[6]);
+    const double frequency_hz = std::stod(values[7]);
+    const double target_values[6] = {
+        target.tran.x,target.tran.y,target.tran.z,
+        target.rpy.rx,target.rpy.ry,target.rpy.rz,
+    };
+    if(std::any_of(std::begin(target_values),std::end(target_values),[](double value){
+           return !std::isfinite(value);
+       }) ||
+       !std::isfinite(requested_duration_s) || requested_duration_s <= 0.0 ||
+       requested_duration_s > 10.0 ||
+       !std::isfinite(frequency_hz) || frequency_hz < 62.5 || frequency_hz > 250.0){
+        throw std::out_of_range("invalid servo duration or frequency");
+    }
+
+    DescPose start;
+    int ret = _ptr_robot->GetActualTCPPose(0,&start);
+    if(ret != 0){
+        return std::to_string(ret);
+    }
+
+    const double dx = target.tran.x - start.tran.x;
+    const double dy = target.tran.y - start.tran.y;
+    const double dz = target.tran.z - start.tran.z;
+    const double linear_distance_mm = std::sqrt(dx * dx + dy * dy + dz * dz);
+    auto shortest_angle_distance = [](double from, double to){
+        double delta = std::fmod(to - from + 180.0,360.0);
+        if(delta < 0.0){
+            delta += 360.0;
+        }
+        return std::abs(delta - 180.0);
+    };
+    const double orientation_distance_deg = std::max({
+        shortest_angle_distance(start.rpy.rx,target.rpy.rx),
+        shortest_angle_distance(start.rpy.ry,target.rpy.ry),
+        shortest_angle_distance(start.rpy.rz,target.rpy.rz),
+    });
+    if(linear_distance_mm > 50.0 || orientation_distance_deg > 30.0){
+        throw std::out_of_range("ServoCartSmooth target exceeds short-move limits");
+    }
+
+    const int step_count = std::max(
+        4,
+        static_cast<int>(std::ceil(requested_duration_s * frequency_hz))
+    );
+    // Keep sending the exact endpoint briefly before leaving servo mode. This
+    // gives the controller time to consume the last sample instead of stopping
+    // the stream while the physical TCP is still following the preceding one.
+    const int endpoint_hold_steps = 3;
+    const double period_s = 1.0 / frequency_hz;
+    float pos_gain[6] = {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f};
+
+    ret = _ptr_robot->ServoMoveStart();
+    if(ret != 0){
+        return std::to_string(ret);
+    }
+
+    const auto start_time = std::chrono::steady_clock::now();
+    int servo_ret = 0;
+    for(int step = 1; step <= step_count + endpoint_hold_steps; ++step){
+        const double u = std::min(
+            1.0,
+            static_cast<double>(step) / static_cast<double>(step_count)
+        );
+        // Quintic smoothstep: position, velocity and acceleration are continuous at both ends.
+        const double blend = u * u * u * (10.0 + u * (-15.0 + 6.0 * u));
+        auto interpolate_angle = [blend](double from, double to){
+            double delta = std::fmod(to - from + 180.0,360.0);
+            if(delta < 0.0){
+                delta += 360.0;
+            }
+            delta -= 180.0;
+            return from + delta * blend;
+        };
+        DescPose command{
+            start.tran.x + (target.tran.x - start.tran.x) * blend,
+            start.tran.y + (target.tran.y - start.tran.y) * blend,
+            start.tran.z + (target.tran.z - start.tran.z) * blend,
+            interpolate_angle(start.rpy.rx,target.rpy.rx),
+            interpolate_angle(start.rpy.ry,target.rpy.ry),
+            interpolate_angle(start.rpy.rz,target.rpy.rz),
+        };
+        servo_ret = _ptr_robot->ServoCart(
+            0,
+            &command,
+            pos_gain,
+            0.0f,
+            0.0f,
+            static_cast<float>(period_s),
+            0.0f,
+            0.0f
+        );
+        if(servo_ret != 0){
+            break;
+        }
+        const auto deadline = start_time + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(static_cast<double>(step) * period_s)
+        );
+        std::this_thread::sleep_until(deadline);
+    }
+
+    const int end_ret = _ptr_robot->ServoMoveEnd();
+    if(servo_ret != 0){
+        return std::to_string(servo_ret);
+    }
+    if(end_ret != 0){
+        return std::to_string(end_ret);
+    }
+    return "0";
+}
+
+
+/**
+ * @brief 在一次伺服会话内沿直线连续贴近，并用工具坐标系 Fz 停止运动。
+ * @param [in] para -
+ *   x,y,z,rx,ry,rz,frequency_hz,force_axis_sign,target_force_n,
+ *   contact_force_n,fine_ratio,near_ratio,coarse_speed_mm_s,
+ *   contact_speed_mm_s,fine_speed_mm_s,near_speed_mm_s,
+ *   acceleration_mm_s2,deceleration_mm_s2,force_filter_alpha,
+ *   target_stable_samples,normal_limit_n,tangent_limit_n,torque_limit_nm,
+ *   timeout_s
+ *
+ * 返回：ret,status,travel_mm,elapsed_s,fx,fy,fz,tx,ty,tz
+ * status=1 表示达到目标力，status=0 表示到达搜索终点仍未达到目标力。
+ * 安全限位和 SDK 故障返回非零 ret，调用方不得回退为普通位置运动。
+ */
+std::string robot_command_thread::ServoCartForceApproach(std::string para){
+    std::vector<std::string> values;
+    _splitString2Vec(para,values);
+    if(values.size() != 24){
+        throw std::logic_error("ServoCartForceApproach expects 24 parameters");
+    }
+
+    DescPose target{
+        std::stod(values[0]),
+        std::stod(values[1]),
+        std::stod(values[2]),
+        std::stod(values[3]),
+        std::stod(values[4]),
+        std::stod(values[5]),
+    };
+    const double frequency_hz = std::stod(values[6]);
+    const double force_axis_sign = std::stod(values[7]);
+    const double target_force_n = std::stod(values[8]);
+    const double contact_force_n = std::stod(values[9]);
+    const double fine_ratio = std::stod(values[10]);
+    const double near_ratio = std::stod(values[11]);
+    const double coarse_speed_mm_s = std::stod(values[12]);
+    const double contact_speed_mm_s = std::stod(values[13]);
+    const double fine_speed_mm_s = std::stod(values[14]);
+    const double near_speed_mm_s = std::stod(values[15]);
+    const double acceleration_mm_s2 = std::stod(values[16]);
+    const double deceleration_mm_s2 = std::stod(values[17]);
+    const double force_filter_alpha = std::stod(values[18]);
+    const int target_stable_samples = std::stoi(values[19]);
+    const double normal_limit_n = std::stod(values[20]);
+    const double tangent_limit_n = std::stod(values[21]);
+    const double torque_limit_nm = std::stod(values[22]);
+    const double timeout_s = std::stod(values[23]);
+
+    const double numeric_values[] = {
+        target.tran.x,target.tran.y,target.tran.z,
+        target.rpy.rx,target.rpy.ry,target.rpy.rz,
+        frequency_hz,force_axis_sign,target_force_n,contact_force_n,
+        fine_ratio,near_ratio,coarse_speed_mm_s,contact_speed_mm_s,
+        fine_speed_mm_s,near_speed_mm_s,acceleration_mm_s2,
+        deceleration_mm_s2,force_filter_alpha,normal_limit_n,
+        tangent_limit_n,torque_limit_nm,timeout_s,
+    };
+    if(std::any_of(std::begin(numeric_values),std::end(numeric_values),[](double value){
+           return !std::isfinite(value);
+       }) ||
+       frequency_hz < 62.5 || frequency_hz > 250.0 ||
+       std::abs(std::abs(force_axis_sign) - 1.0) > 1e-6 ||
+       target_force_n <= 0.0 || target_force_n > 200.0 ||
+       contact_force_n < 0.0 || contact_force_n > target_force_n ||
+       fine_ratio < 0.0 || fine_ratio > near_ratio || near_ratio > 1.0 ||
+       coarse_speed_mm_s <= 0.0 || coarse_speed_mm_s > 250.0 ||
+       contact_speed_mm_s <= 0.0 || contact_speed_mm_s > 250.0 ||
+       fine_speed_mm_s <= 0.0 || fine_speed_mm_s > 250.0 ||
+       near_speed_mm_s <= 0.0 || near_speed_mm_s > 250.0 ||
+       acceleration_mm_s2 <= 0.0 || acceleration_mm_s2 > 2000.0 ||
+       deceleration_mm_s2 <= 0.0 || deceleration_mm_s2 > 4000.0 ||
+       force_filter_alpha <= 0.0 || force_filter_alpha > 1.0 ||
+       target_stable_samples < 1 || target_stable_samples > 20 ||
+       normal_limit_n <= target_force_n || normal_limit_n > 500.0 ||
+       tangent_limit_n <= 0.0 || tangent_limit_n > 500.0 ||
+       torque_limit_nm <= 0.0 || torque_limit_nm > 50.0 ||
+       timeout_s <= 0.0 || timeout_s > 30.0){
+        throw std::out_of_range("invalid continuous force approach parameter");
+    }
+
+    DescPose start;
+    int ret = _ptr_robot->GetActualTCPPose(0,&start);
+    if(ret != 0){
+        return std::to_string(ret);
+    }
+
+    const double dx = target.tran.x - start.tran.x;
+    const double dy = target.tran.y - start.tran.y;
+    const double dz = target.tran.z - start.tran.z;
+    const double distance_mm = std::sqrt(dx * dx + dy * dy + dz * dz);
+    auto shortest_angle_delta = [](double from, double to){
+        double delta = std::fmod(to - from + 180.0,360.0);
+        if(delta < 0.0){
+            delta += 360.0;
+        }
+        return delta - 180.0;
+    };
+    const double drx = shortest_angle_delta(start.rpy.rx,target.rpy.rx);
+    const double dry = shortest_angle_delta(start.rpy.ry,target.rpy.ry);
+    const double drz = shortest_angle_delta(start.rpy.rz,target.rpy.rz);
+    const double orientation_distance_deg = std::max({std::abs(drx),std::abs(dry),std::abs(drz)});
+    if(distance_mm > 100.0 || orientation_distance_deg > 30.0){
+        throw std::out_of_range("ServoCartForceApproach target exceeds limits");
+    }
+
+    ForceTorque last_force{};
+    double progress_mm = 0.0;
+    const auto command_start_time = std::chrono::steady_clock::now();
+    auto elapsed_s = [&](){
+        return std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - command_start_time
+        ).count();
+    };
+    auto response = [&](int code, int status){
+        std::ostringstream stream;
+        stream << std::fixed << std::setprecision(6)
+               << code << "," << status << "," << progress_mm << "," << elapsed_s()
+               << "," << last_force.fx << "," << last_force.fy << "," << last_force.fz
+               << "," << last_force.tx << "," << last_force.ty << "," << last_force.tz;
+        return stream.str();
+    };
+    auto safety_code = [&](const ForceTorque& force){
+        const double normal_n = std::abs(force.fz);
+        const double tangent_n = std::hypot(force.fx,force.fy);
+        const double torque_nm = std::max({std::abs(force.tx),std::abs(force.ty),std::abs(force.tz)});
+        if(normal_n > normal_limit_n){
+            return -2201;
+        }
+        if(tangent_n > tangent_limit_n){
+            return -2202;
+        }
+        if(torque_nm > torque_limit_nm){
+            return -2203;
+        }
+        return 0;
+    };
+
+    ret = _ptr_robot->FT_GetForceTorqueRCS(1,&last_force);
+    if(ret != 0){
+        return response(-2204,-1);
+    }
+    int limit_code = safety_code(last_force);
+    if(limit_code != 0){
+        _ptr_robot->StopMotion();
+        return response(limit_code,-1);
+    }
+    if(distance_mm <= 1e-6){
+        const int reached = force_axis_sign * last_force.fz >= target_force_n ? 1 : 0;
+        return response(0,reached);
+    }
+
+    ret = _ptr_robot->ServoMoveStart();
+    if(ret != 0){
+        return response(ret,-1);
+    }
+
+    const auto servo_start_time = std::chrono::steady_clock::now();
+    const double period_s = 1.0 / frequency_hz;
+    float pos_gain[6] = {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f};
+    double filtered_press_n = std::max(0.0,force_axis_sign * last_force.fz);
+    double speed_mm_s = 0.0;
+    int stable_samples = 0;
+    int result_code = 0;
+    int result_status = 0;
+    int step = 0;
+    DescPose last_command = start;
+
+    while(true){
+        ret = _ptr_robot->FT_GetForceTorqueRCS(1,&last_force);
+        if(ret != 0){
+            result_code = -2204;
+            result_status = -1;
+            break;
+        }
+        limit_code = safety_code(last_force);
+        if(limit_code != 0){
+            result_code = limit_code;
+            result_status = -1;
+            break;
+        }
+
+        const double press_n = force_axis_sign * last_force.fz;
+        filtered_press_n = force_filter_alpha * std::max(0.0,press_n)
+            + (1.0 - force_filter_alpha) * filtered_press_n;
+        stable_samples = press_n >= target_force_n ? stable_samples + 1 : 0;
+        if(stable_samples >= target_stable_samples){
+            result_status = 1;
+            break;
+        }
+        if(progress_mm >= distance_mm - 1e-9){
+            result_status = 0;
+            break;
+        }
+        if(elapsed_s() >= timeout_s){
+            result_code = -2205;
+            result_status = -1;
+            break;
+        }
+
+        double requested_speed_mm_s = coarse_speed_mm_s;
+        if(filtered_press_n >= target_force_n * near_ratio){
+            requested_speed_mm_s = near_speed_mm_s;
+        }else if(filtered_press_n >= target_force_n * fine_ratio){
+            requested_speed_mm_s = fine_speed_mm_s;
+        }else if(filtered_press_n >= contact_force_n){
+            requested_speed_mm_s = contact_speed_mm_s;
+        }
+        const double speed_step = (
+            requested_speed_mm_s >= speed_mm_s ? acceleration_mm_s2 : deceleration_mm_s2
+        ) * period_s;
+        if(requested_speed_mm_s > speed_mm_s){
+            speed_mm_s = std::min(requested_speed_mm_s,speed_mm_s + speed_step);
+        }else{
+            speed_mm_s = std::max(requested_speed_mm_s,speed_mm_s - speed_step);
+        }
+        progress_mm = std::min(distance_mm,progress_mm + speed_mm_s * period_s);
+        const double fraction = progress_mm / distance_mm;
+        last_command = DescPose{
+            start.tran.x + dx * fraction,
+            start.tran.y + dy * fraction,
+            start.tran.z + dz * fraction,
+            start.rpy.rx + drx * fraction,
+            start.rpy.ry + dry * fraction,
+            start.rpy.rz + drz * fraction,
+        };
+        ret = _ptr_robot->ServoCart(
+            0,&last_command,pos_gain,0.0f,0.0f,
+            static_cast<float>(period_s),0.0f,0.0f
+        );
+        if(ret != 0){
+            result_code = ret;
+            result_status = -1;
+            break;
+        }
+
+        ++step;
+        const auto deadline = servo_start_time
+            + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(static_cast<double>(step) * period_s)
+            );
+        std::this_thread::sleep_until(deadline);
+    }
+
+    // 正常结束时短暂保持最后一个连续目标，让控制器消费完末端采样。
+    if(result_code == 0){
+        for(int hold_step = 0; hold_step < 3; ++hold_step){
+            ret = _ptr_robot->FT_GetForceTorqueRCS(1,&last_force);
+            if(ret != 0){
+                result_code = -2204;
+                result_status = -1;
+                break;
+            }
+            limit_code = safety_code(last_force);
+            if(limit_code != 0){
+                result_code = limit_code;
+                result_status = -1;
+                break;
+            }
+            ret = _ptr_robot->ServoCart(
+                0,&last_command,pos_gain,0.0f,0.0f,
+                static_cast<float>(period_s),0.0f,0.0f
+            );
+            if(ret != 0){
+                result_code = ret;
+                result_status = -1;
+                break;
+            }
+            ++step;
+            const auto deadline = servo_start_time
+                + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(static_cast<double>(step) * period_s)
+                );
+            std::this_thread::sleep_until(deadline);
+        }
+    }
+
+    const int end_ret = _ptr_robot->ServoMoveEnd();
+    if(result_code == 0 && end_ret != 0){
+        result_code = end_ret;
+        result_status = -1;
+    }
+    if(result_code != 0){
+        _ptr_robot->StopMotion();
+    }
+    return response(result_code,result_status);
 }
 
 

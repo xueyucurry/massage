@@ -238,6 +238,30 @@ server_process_exists() {
   pgrep -f "${SERVER_PATTERN}" >/dev/null 2>&1
 }
 
+server_process_uses_installed_binary() {
+  local installed_binary="${ROS2_WS}/install/fairino_hardware/lib/fairino_hardware/ros2_cmd_server"
+  local installed_identity=""
+  local running_identity=""
+  local pid=""
+
+  if [[ ! -x "${installed_binary}" ]]; then
+    return 1
+  fi
+  installed_identity="$(stat -Lc '%d:%i' "${installed_binary}" 2>/dev/null || true)"
+  if [[ -z "${installed_identity}" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" && -e "/proc/${pid}/exe" ]] || continue
+    running_identity="$(stat -Lc '%d:%i' "/proc/${pid}/exe" 2>/dev/null || true)"
+    if [[ -n "${running_identity}" && "${running_identity}" == "${installed_identity}" ]]; then
+      return 0
+    fi
+  done < <(pgrep -f "${SERVER_PATTERN}" || true)
+  return 1
+}
+
 moveit_process_exists() {
   pgrep -f "${MOVEIT_PATTERN}" >/dev/null 2>&1
 }
@@ -763,14 +787,25 @@ start_stack() {
   reset_ros2_discovery
 
   if server_process_exists; then
-    echo "检测到已有 FAIRINO ROS2 控制服务，先执行探针"
-    if probe_service; then
-      echo "服务已运行并通过探针。"
-      return 0
+    if ! server_process_uses_installed_binary; then
+      if pgrep -f "${RUNNER_PATTERN}" >/dev/null 2>&1; then
+        echo "控制服务二进制已更新，但 ft.py 仍在运行；拒绝中途切换控制服务。" >&2
+        echo "请先正常结束当前按摩流程，再重新执行 ./massage start。" >&2
+        return 1
+      fi
+      echo "检测到控制服务仍在运行旧二进制，重启后台服务以加载新版本"
+      stop_background_services
+      setup_ros_env
+    else
+      echo "检测到已有 FAIRINO ROS2 控制服务，先执行探针"
+      if probe_service; then
+        echo "服务已运行并通过探针。"
+        return 0
+      fi
+      echo "已有服务未通过探针，准备重启"
+      stop_processes
+      setup_ros_env
     fi
-    echo "已有服务未通过探针，准备重启"
-    stop_processes
-    setup_ros_env
   elif service_ready; then
     echo "检测到残留 ROS2 服务发现信息，准备重新拉起控制服务"
     reset_ros2_discovery

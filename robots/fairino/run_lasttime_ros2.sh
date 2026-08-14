@@ -38,7 +38,8 @@ export LASTTIME_FORCE_APPROACH_PRECONTACT_CLEARANCE_MM="${LASTTIME_FORCE_APPROAC
 export LASTTIME_FORCE_APPROACH_PRECONTACT_VEL="${LASTTIME_FORCE_APPROACH_PRECONTACT_VEL:-12.0}"
 export LASTTIME_FORCE_HOLD_KP_MM_PER_N="${LASTTIME_FORCE_HOLD_KP_MM_PER_N:-0.02}"
 export LASTTIME_FORCE_HOLD_MAX_STEP_MM="${LASTTIME_FORCE_HOLD_MAX_STEP_MM:-0.08}"
-export LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION="${LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION:-1}"
+export FT_KEEP_CURRENT_ORIENTATION="${FT_KEEP_CURRENT_ORIENTATION:-${LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION:-1}}"
+export LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION="${LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION:-${FT_KEEP_CURRENT_ORIENTATION}}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -59,6 +60,31 @@ service_ready() {
 
 server_process_exists() {
   pgrep -f '(^|/)ros2_cmd_server([[:space:]]|$)|ros2 run fairino_hardware ros2_cmd_server' >/dev/null 2>&1
+}
+
+server_process_uses_installed_binary() {
+  local installed_binary="${ROS2_WS}/install/fairino_hardware/lib/fairino_hardware/ros2_cmd_server"
+  local installed_identity=""
+  local running_identity=""
+  local pid=""
+  local pattern='(^|/)ros2_cmd_server([[:space:]]|$)|ros2 run fairino_hardware ros2_cmd_server'
+
+  if [[ ! -x "${installed_binary}" ]]; then
+    return 1
+  fi
+  installed_identity="$(stat -Lc '%d:%i' "${installed_binary}" 2>/dev/null || true)"
+  if [[ -z "${installed_identity}" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r pid; do
+    [[ -n "${pid}" && -e "/proc/${pid}/exe" ]] || continue
+    running_identity="$(stat -Lc '%d:%i' "/proc/${pid}/exe" 2>/dev/null || true)"
+    if [[ -n "${running_identity}" && "${running_identity}" == "${installed_identity}" ]]; then
+      return 0
+    fi
+  done < <(pgrep -f "${pattern}" || true)
+  return 1
 }
 
 reset_ros2_discovery() {
@@ -236,8 +262,16 @@ fi
 export PYTHON_BIN
 set -u
 
-if server_process_exists && service_ready; then
-  echo "检测到 FAIRINO ROS2 控制服务已在运行"
+if server_process_exists && ! server_process_uses_installed_binary; then
+  if pgrep -f '(^|/)python[0-9.]*[[:space:]]+ft\.py([[:space:]]|$)' >/dev/null 2>&1; then
+    echo "控制服务二进制已更新，但另一个 ft.py 仍在运行；拒绝中途切换控制服务。" >&2
+    exit 1
+  fi
+  echo "检测到 FAIRINO ROS2 控制服务仍在运行旧二进制，准备重启加载新版本"
+  stop_existing_servers
+  start_server || exit 1
+elif server_process_exists && service_ready; then
+  echo "检测到 FAIRINO ROS2 控制服务已在运行，且二进制为当前安装版本"
 elif server_process_exists; then
   echo "检测到未就绪的 FAIRINO ROS2 控制服务，准备重启"
   stop_existing_servers

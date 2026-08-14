@@ -126,13 +126,61 @@ ROS2_STATE_WAIT_S = float(os.environ.get("ROS2_STATE_WAIT_S", "12.0"))
 ROS2_MOTION_DONE_WAIT_S = float(os.environ.get("ROS2_MOTION_DONE_WAIT_S", "15.0"))
 ROS2_MOTION_DONE_POSE_TOL_MM = float(os.environ.get("ROS2_MOTION_DONE_POSE_TOL_MM", "3.0"))
 ROS2_MOTION_DONE_ORI_TOL_DEG = float(os.environ.get("ROS2_MOTION_DONE_ORI_TOL_DEG", "3.0"))
+ROS2_MOTION_DONE_JOINT_TOL_DEG = float(
+    os.environ.get("ROS2_MOTION_DONE_JOINT_TOL_DEG", "1.0")
+)
+ROS2_MOTION_DONE_STABLE_SAMPLES = max(
+    1,
+    int(os.environ.get("ROS2_MOTION_DONE_STABLE_SAMPLES", "2")),
+)
+ROS2_MOTION_DONE_TOL_FRACTION = max(
+    0.01,
+    min(1.0, float(os.environ.get("ROS2_MOTION_DONE_TOL_FRACTION", "0.25"))),
+)
+ROS2_MOTION_STATE_POLL_S = max(
+    0.001,
+    float(os.environ.get("ROS2_MOTION_STATE_POLL_S", "0.02")),
+)
 ROS2_MOVE_ACC = float(os.environ.get("ROS2_MOVE_ACC", "0"))
 ROS2_MOVE_OVL = float(os.environ.get("ROS2_MOVE_OVL", "100"))
 ROS2_TOOL = int(os.environ.get("ROBOT_TOOL_ID", "0"))
 ROS2_USER = int(os.environ.get("ROBOT_USER_ID", "0"))
+ROS2_SERVO_INTERPOLATION = os.environ.get(
+    "FT_SERVO_INTERPOLATION", "1"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+ROS2_SERVO_INTERPOLATION_HZ = max(
+    62.5,
+    min(250.0, float(os.environ.get("FT_SERVO_INTERPOLATION_HZ", "125.0"))),
+)
+ROS2_SERVO_MIN_SAMPLES = max(
+    4,
+    int(os.environ.get("FT_SERVO_MIN_SAMPLES", "8")),
+)
+ROS2_SERVO_MAX_DISTANCE_MM = max(
+    0.0,
+    float(os.environ.get("FT_SERVO_MAX_DISTANCE_MM", "30.0")),
+)
+ROS2_SERVO_MAX_ORIENTATION_DEG = max(
+    0.0,
+    float(os.environ.get("FT_SERVO_MAX_ORIENTATION_DEG", "15.0")),
+)
+ROS2_SERVO_LINEAR_SPEED_MM_S_AT_100 = max(
+    1.0,
+    float(os.environ.get("FT_SERVO_LINEAR_SPEED_MM_S_AT_100", "1000.0")),
+)
+ROS2_SERVO_ANGULAR_SPEED_DEG_S_AT_100 = max(
+    1.0,
+    float(os.environ.get("FT_SERVO_ANGULAR_SPEED_DEG_S_AT_100", "180.0")),
+)
 ROS2_LIFT_SAFE_Z_MM = float(os.environ.get("ROS2_LIFT_SAFE_Z_MM", str(INIT_SAFE_Z_MM)))
 ROS2_KEEP_CURRENT_ORIENTATION = os.environ.get(
-    "FT_KEEP_CURRENT_ORIENTATION", "0"
+    "FT_KEEP_CURRENT_ORIENTATION",
+    os.environ.get("LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION", "0"),
 ).strip().lower() in {
     "1",
     "true",
@@ -418,11 +466,67 @@ FORCE_APPROACH_PRECONTACT_VEL = _scaled_force_approach_velocity(FORCE_APPROACH_P
 FORCE_APPROACH_MAX_OFFSET_MM = float(
     os.environ.get(
         "LASTTIME_FORCE_APPROACH_MAX_OFFSET_MM",
-        str(max(150.0, FORCE_CONTACT_OFFSET_MM)),
+        str(max(35.0, FORCE_CONTACT_OFFSET_MM)),
     )
 )
 FORCE_HOLD_KP_MM_PER_N = float(os.environ.get("LASTTIME_FORCE_HOLD_KP_MM_PER_N", "0.04"))
 FORCE_HOLD_MAX_STEP_MM = float(os.environ.get("LASTTIME_FORCE_HOLD_MAX_STEP_MM", "0.15"))
+FORCE_CONTINUOUS_APPROACH = os.environ.get(
+    "FT_CONTINUOUS_FORCE_APPROACH", "1"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+FORCE_CONTINUOUS_APPROACH_HZ = max(
+    62.5,
+    min(
+        250.0,
+        float(
+            os.environ.get(
+                "FT_CONTINUOUS_FORCE_APPROACH_HZ",
+                str(ROS2_SERVO_INTERPOLATION_HZ),
+            )
+        ),
+    ),
+)
+FORCE_CONTINUOUS_COARSE_SPEED_MM_S = max(
+    0.1,
+    min(250.0, float(os.environ.get("FT_CONTINUOUS_FORCE_COARSE_SPEED_MM_S", "18.0"))),
+)
+FORCE_CONTINUOUS_CONTACT_SPEED_MM_S = max(
+    0.1,
+    min(250.0, float(os.environ.get("FT_CONTINUOUS_FORCE_CONTACT_SPEED_MM_S", "4.0"))),
+)
+FORCE_CONTINUOUS_FINE_SPEED_MM_S = max(
+    0.1,
+    min(250.0, float(os.environ.get("FT_CONTINUOUS_FORCE_FINE_SPEED_MM_S", "4.0"))),
+)
+FORCE_CONTINUOUS_NEAR_SPEED_MM_S = max(
+    0.1,
+    min(250.0, float(os.environ.get("FT_CONTINUOUS_FORCE_NEAR_SPEED_MM_S", "3.0"))),
+)
+FORCE_CONTINUOUS_ACCEL_MM_S2 = max(
+    1.0,
+    min(2000.0, float(os.environ.get("FT_CONTINUOUS_FORCE_ACCEL_MM_S2", "120.0"))),
+)
+FORCE_CONTINUOUS_DECEL_MM_S2 = max(
+    1.0,
+    min(4000.0, float(os.environ.get("FT_CONTINUOUS_FORCE_DECEL_MM_S2", "240.0"))),
+)
+FORCE_CONTINUOUS_FILTER_ALPHA = max(
+    0.01,
+    min(1.0, float(os.environ.get("FT_CONTINUOUS_FORCE_FILTER_ALPHA", "0.35"))),
+)
+FORCE_CONTINUOUS_TARGET_STABLE_SAMPLES = max(
+    1,
+    min(20, int(os.environ.get("FT_CONTINUOUS_FORCE_TARGET_STABLE_SAMPLES", "2"))),
+)
+FORCE_CONTINUOUS_TIMEOUT_S = max(
+    1.0,
+    min(30.0, float(os.environ.get("FT_CONTINUOUS_FORCE_TIMEOUT_S", "20.0"))),
+)
 FORCE_RELEASE_LIMIT_N = float(
     os.environ.get("LASTTIME_FORCE_RELEASE_LIMIT_N", "5.0")
 )
@@ -481,7 +585,7 @@ THIGH_DISPLAY = os.environ.get("THIGH_DISPLAY", "1").strip().lower() in {
 }
 THIGH_HOVER_HEIGHT_MM = float(os.environ.get("THIGH_HOVER_HEIGHT_MM", THIGH_HOVER_HEIGHT_DEFAULT_MM))
 THIGH_FORCE_APPROACH_MAX_OFFSET_MM = float(
-    os.environ.get("THIGH_FORCE_APPROACH_MAX_OFFSET_MM", "150.0")
+    os.environ.get("THIGH_FORCE_APPROACH_MAX_OFFSET_MM", "35.0")
 )
 THIGH_LOCAL_NORMAL_MAX_TILT_DEG = float(
     os.environ.get("THIGH_LOCAL_NORMAL_MAX_TILT_DEG", "0.0")
@@ -619,6 +723,67 @@ def _fmt_value(value):
     return f"{float(value):.6f}".rstrip("0").rstrip(".")
 
 
+def _shortest_angle_delta_deg(start, end):
+    return (float(end) - float(start) + 180.0) % 360.0 - 180.0
+
+
+def _pose_distance(current_pose, target_pose):
+    pos_dist = math.sqrt(
+        sum((float(current_pose[i]) - float(target_pose[i])) ** 2 for i in range(3))
+    )
+    ori_dist = max(
+        abs(_shortest_angle_delta_deg(current_pose[i], target_pose[i]))
+        for i in range(3, 6)
+    )
+    return pos_dist, ori_dist
+
+
+def _servo_interpolation_metrics(start_pose, target_pose):
+    linear_distance_mm = math.sqrt(
+        sum((float(target_pose[i]) - float(start_pose[i])) ** 2 for i in range(3))
+    )
+    orientation_distance_deg = max(
+        abs(_shortest_angle_delta_deg(start_pose[i], target_pose[i]))
+        for i in range(3, 6)
+    )
+    return linear_distance_mm, orientation_distance_deg
+
+
+def _motion_completion_tolerances(start_pose, target_pose):
+    linear_distance_mm, orientation_distance_deg = _servo_interpolation_metrics(
+        start_pose,
+        target_pose,
+    )
+    position_tolerance_mm = min(
+        ROS2_MOTION_DONE_POSE_TOL_MM,
+        max(0.02, linear_distance_mm * ROS2_MOTION_DONE_TOL_FRACTION),
+    )
+    orientation_tolerance_deg = min(
+        ROS2_MOTION_DONE_ORI_TOL_DEG,
+        max(0.02, orientation_distance_deg * ROS2_MOTION_DONE_TOL_FRACTION),
+    )
+    return position_tolerance_mm, orientation_tolerance_deg
+
+
+def _servo_interpolation_duration_s(start_pose, target_pose, speed_percent):
+    linear_distance_mm, orientation_distance_deg = _servo_interpolation_metrics(
+        start_pose,
+        target_pose,
+    )
+    speed_ratio = max(0.01, min(1.0, abs(float(speed_percent)) / 100.0))
+    # Quintic smoothstep reaches a peak normalized velocity of 1.875. Account
+    # for that peak instead of treating distance/duration as the peak speed.
+    smoothstep_peak_rate = 1.875
+    linear_duration_s = smoothstep_peak_rate * linear_distance_mm / (
+        ROS2_SERVO_LINEAR_SPEED_MM_S_AT_100 * speed_ratio
+    )
+    angular_duration_s = smoothstep_peak_rate * orientation_distance_deg / (
+        ROS2_SERVO_ANGULAR_SPEED_DEG_S_AT_100 * speed_ratio
+    )
+    min_duration_s = float(ROS2_SERVO_MIN_SAMPLES) / ROS2_SERVO_INTERPOLATION_HZ
+    return max(min_duration_s, linear_duration_s, angular_duration_s)
+
+
 def _scaled_robot_motion_speed(vel):
     speed_scale = (
         ROBOT_MOTION_SPEED_SCALE
@@ -654,6 +819,23 @@ def _parse_ret_code(cmd_res):
         return int(float(head))
     except ValueError:
         return -9999
+
+
+def _parse_force_approach_response(cmd_res):
+    """Parse ServoCartForceApproach's structured command response."""
+    parts = [part.strip() for part in str(cmd_res).split(",")]
+    if len(parts) < 10:
+        return None
+    try:
+        return {
+            "ret": int(float(parts[0])),
+            "status": int(float(parts[1])),
+            "travel_mm": float(parts[2]),
+            "elapsed_s": float(parts[3]),
+            "force": [float(value) for value in parts[4:10]],
+        }
+    except ValueError:
+        return None
 
 
 def _quat_from_rpy_deg(rx_deg, ry_deg, rz_deg):
@@ -1085,6 +1267,9 @@ class Ros2RobotProxy:
         self._sub = None
         self.latest_state = None
         self.latest_state_time = 0.0
+        self._state_sequence = 0
+        self._servo_interpolation_available = bool(ROS2_SERVO_INTERPOLATION)
+        self._servo_interpolation_warning_reported = False
 
     def connect(self):
         if not rclpy.ok():
@@ -1122,6 +1307,7 @@ class Ros2RobotProxy:
     def _state_callback(self, msg):
         self.latest_state = msg
         self.latest_state_time = time.time()
+        self._state_sequence += 1
 
     def spin_once(self, timeout_sec=0.1):
         if self.node is not None:
@@ -1251,36 +1437,88 @@ class Ros2RobotProxy:
         except KeyError:
             return None
 
-    def wait_motion_done(self, timeout_sec=ROS2_MOTION_DONE_WAIT_S):
+    def wait_motion_done(
+        self,
+        timeout_sec=ROS2_MOTION_DONE_WAIT_S,
+        *,
+        target_pose=None,
+        target_joints_deg=None,
+        after_state_sequence=None,
+        require_motion_done=True,
+        pose_tolerance_mm=ROS2_MOTION_DONE_POSE_TOL_MM,
+        orientation_tolerance_deg=ROS2_MOTION_DONE_ORI_TOL_DEG,
+    ):
+        """Wait for post-command feedback that proves the requested target arrived.
+
+        The controller may still publish ``motion_done=1`` from the preceding
+        motion for a short time after accepting a new MoveL/MoveJ.  Treating that
+        stale bit as completion caused thousands of targets to be queued while the
+        robot was still travelling.  A completion now needs a newer feedback
+        sample, target agreement and consecutive stable samples.
+        """
+        minimum_sequence = (
+            self._state_sequence
+            if after_state_sequence is None
+            else int(after_state_sequence)
+        )
         deadline = time.time() + timeout_sec
+        checked_sequence = minimum_sequence
+        stable_samples = 0
         while time.time() < deadline:
-            self.spin_once(0.1)
+            self.spin_once(min(ROS2_MOTION_STATE_POLL_S, max(0.0, deadline - time.time())))
+            if self.latest_state is None or self._state_sequence <= checked_sequence:
+                continue
+            checked_sequence = self._state_sequence
+
             motion_done = _state_field(
                 self.latest_state,
                 "motion_done",
                 "robot_motion_done",
                 default=None,
             )
-            if motion_done is not None and int(motion_done) == 1:
-                return True
+            target_reached = True
+            if target_pose is not None:
+                current = _state_pose(self.latest_state)
+                pos_dist, ori_dist = _pose_distance(current, target_pose)
+                target_reached = (
+                    pos_dist <= float(pose_tolerance_mm)
+                    and ori_dist <= float(orientation_tolerance_deg)
+                )
+            elif target_joints_deg is not None:
+                current = _state_joints_deg(self.latest_state)
+                target_reached = max(
+                    abs(_shortest_angle_delta_deg(current[i], target_joints_deg[i]))
+                    for i in range(6)
+                ) <= ROS2_MOTION_DONE_JOINT_TOL_DEG
+
+            done_reached = (
+                not require_motion_done
+                or motion_done is None
+                or int(motion_done) == 1
+            )
+            if target_reached and done_reached:
+                stable_samples += 1
+                if stable_samples >= ROS2_MOTION_DONE_STABLE_SAMPLES:
+                    return True
+            else:
+                stable_samples = 0
         return False
 
-    def pose_close_to(self, target_pose):
+    def pose_close_to(
+        self,
+        target_pose,
+        position_tolerance_mm=ROS2_MOTION_DONE_POSE_TOL_MM,
+        orientation_tolerance_deg=ROS2_MOTION_DONE_ORI_TOL_DEG,
+    ):
         try:
             current = self.get_actual_tcp_pose()
         except Exception:
             return False
-        pos_dist = math.sqrt(
-            (float(current[0]) - float(target_pose[0])) ** 2
-            + (float(current[1]) - float(target_pose[1])) ** 2
-            + (float(current[2]) - float(target_pose[2])) ** 2
-        )
-        ori_dist = max(
-            abs(float(current[3]) - float(target_pose[3])),
-            abs(float(current[4]) - float(target_pose[4])),
-            abs(float(current[5]) - float(target_pose[5])),
-        )
-        if pos_dist <= ROS2_MOTION_DONE_POSE_TOL_MM and ori_dist <= ROS2_MOTION_DONE_ORI_TOL_DEG:
+        pos_dist, ori_dist = _pose_distance(current, target_pose)
+        if (
+            pos_dist <= float(position_tolerance_mm)
+            and ori_dist <= float(orientation_tolerance_deg)
+        ):
             print(
                 f"MoveL 等待 motion_done 超时，但实际位姿已接近目标 "
                 f"(pos={pos_dist:.2f}mm, ori={ori_dist:.2f}deg)，按成功处理"
@@ -1328,7 +1566,11 @@ class Ros2RobotProxy:
         ) + ")"
         ret, _ = self._call(cmd, raise_on_error=False)
         if ret == 0 and float(blendT) < 0:
-            if not self.wait_motion_done():
+            state_sequence_after_call = self._state_sequence
+            if not self.wait_motion_done(
+                target_joints_deg=joint_pos_deg,
+                after_state_sequence=state_sequence_after_call,
+            ):
                 return -1001
         return ret
 
@@ -1343,6 +1585,12 @@ class Ros2RobotProxy:
         blendT=BLEND_BLOCKING,
         config=-1,
     ):
+        self.spin_once(ROS2_MOTION_STATE_POLL_S)
+        start_pose = self.get_actual_tcp_pose()
+        position_tolerance_mm, orientation_tolerance_deg = _motion_completion_tolerances(
+            start_pose,
+            desc_pos,
+        )
         point_cmd = "CARTPoint(1," + ",".join(_fmt_value(v) for v in desc_pos) + ")"
         ret, _ = self._call(point_cmd, raise_on_error=False)
         if ret != 0:
@@ -1358,10 +1606,93 @@ class Ros2RobotProxy:
         ) + ")"
         ret, _ = self._call(cmd, raise_on_error=False)
         if ret == 0 and float(blendT) < 0:
-            if not self.wait_motion_done():
-                if self.pose_close_to(desc_pos):
+            state_sequence_after_call = self._state_sequence
+            if not self.wait_motion_done(
+                target_pose=desc_pos,
+                after_state_sequence=state_sequence_after_call,
+                pose_tolerance_mm=position_tolerance_mm,
+                orientation_tolerance_deg=orientation_tolerance_deg,
+            ):
+                if self.pose_close_to(
+                    desc_pos,
+                    position_tolerance_mm,
+                    orientation_tolerance_deg,
+                ):
                     return 0
                 return -1001
+        return ret
+
+    def MoveCartInterpolated(
+        self,
+        desc_pos,
+        tool=ROS2_TOOL,
+        user=ROS2_USER,
+        vel=MOVE_VEL_FAST,
+    ):
+        """Move to the same Cartesian target through an internal timed servo stream.
+
+        The custom command runs inside the ROS2 server so service round trips cannot
+        disturb the requested interpolation cadence. Non-zero tool/user coordinates
+        retain the original MoveCart path because ServoCart mode 0 uses base poses.
+        """
+        if not self._servo_interpolation_available or int(tool) != 0 or int(user) != 0:
+            return None
+
+        # Refresh the local state before deciding whether this short force-control
+        # move is eligible. The server obtains the authoritative start pose again.
+        self.spin_once(0.02)
+        start_pose = self.get_actual_tcp_pose()
+        linear_distance_mm, orientation_distance_deg = _servo_interpolation_metrics(
+            start_pose,
+            desc_pos,
+        )
+        if (
+            linear_distance_mm > ROS2_SERVO_MAX_DISTANCE_MM
+            or orientation_distance_deg > ROS2_SERVO_MAX_ORIENTATION_DEG
+        ):
+            return None
+
+        speed_percent = _scaled_robot_motion_speed(vel)
+        duration_s = _servo_interpolation_duration_s(
+            start_pose,
+            desc_pos,
+            speed_percent,
+        )
+        position_tolerance_mm, orientation_tolerance_deg = _motion_completion_tolerances(
+            start_pose,
+            desc_pos,
+        )
+        cmd = "ServoCartSmooth(" + ",".join(
+            _fmt_value(value)
+            for value in [
+                *desc_pos,
+                duration_s,
+                ROS2_SERVO_INTERPOLATION_HZ,
+            ]
+        ) + ")"
+        ret, _ = self._call(
+            cmd,
+            timeout_sec=max(ROS2_CALL_TIMEOUT_S, duration_s + 5.0),
+            raise_on_error=False,
+        )
+        state_sequence_after_call = self._state_sequence
+        if ret == -1:
+            self._servo_interpolation_available = False
+            if not self._servo_interpolation_warning_reported:
+                print(
+                    "[Force] 控制服务不支持 ServoCartSmooth；本次进程停止重复探测，"
+                    "请重新构建并重启 ROS2 控制服务"
+                )
+                self._servo_interpolation_warning_reported = True
+        elif ret == 0 and not self.wait_motion_done(
+            timeout_sec=max(1.0, duration_s + 1.0),
+            target_pose=desc_pos,
+            after_state_sequence=state_sequence_after_call,
+            require_motion_done=False,
+            pose_tolerance_mm=position_tolerance_mm,
+            orientation_tolerance_deg=orientation_tolerance_deg,
+        ):
+            return -1001
         return ret
 
     def CloseRPC(self):
@@ -1435,6 +1766,67 @@ class Ros2ForceController:
         if ret != 0:
             return None
         return values
+
+    def continuous_approach(self, target_pose, context):
+        """Run one force-aware continuous servo session toward ``target_pose``.
+
+        Safety failures deliberately raise instead of falling back to MoveCart: once
+        contact is possible, a position-only retry could continue pressing after the
+        force-aware controller has already stopped.
+        """
+        target_force_n = abs(float(self.target_force_n))
+        fine_ratio = max(0.0, min(1.0, float(FORCE_APPROACH_FINE_RATIO)))
+        near_ratio = max(fine_ratio, min(1.0, float(FORCE_APPROACH_NEAR_RATIO)))
+        cmd = self._cmd(
+            "ServoCartForceApproach",
+            *target_pose,
+            FORCE_CONTINUOUS_APPROACH_HZ,
+            FORCE_AXIS_SIGN,
+            target_force_n,
+            max(0.0, min(target_force_n, abs(float(FORCE_APPROACH_CONTACT_N)))),
+            fine_ratio,
+            near_ratio,
+            FORCE_CONTINUOUS_COARSE_SPEED_MM_S,
+            FORCE_CONTINUOUS_CONTACT_SPEED_MM_S,
+            FORCE_CONTINUOUS_FINE_SPEED_MM_S,
+            FORCE_CONTINUOUS_NEAR_SPEED_MM_S,
+            FORCE_CONTINUOUS_ACCEL_MM_S2,
+            FORCE_CONTINUOUS_DECEL_MM_S2,
+            FORCE_CONTINUOUS_FILTER_ALPHA,
+            FORCE_CONTINUOUS_TARGET_STABLE_SAMPLES,
+            self.config.software_force_limit,
+            self.tangential_force_limit,
+            FORCE_SOFTWARE_TORQUE_LIMIT_NM,
+            FORCE_CONTINUOUS_TIMEOUT_S,
+        )
+        ret, cmd_res = self.robot._call(
+            cmd,
+            timeout_sec=max(ROS2_CALL_TIMEOUT_S, FORCE_CONTINUOUS_TIMEOUT_S + 5.0),
+            raise_on_error=False,
+        )
+        result = _parse_force_approach_response(cmd_res)
+        if result is None:
+            if ret == -1:
+                raise RuntimeError(
+                    f"{context}: 控制服务不支持连续伺服贴近，"
+                    "请重新构建并重启 ROS2 控制服务"
+                )
+            raise RuntimeError(f"{context}: 连续伺服贴近返回不可解析: {cmd_res}")
+        if ret != 0:
+            reason = {
+                -2201: "法向力超过软件限位",
+                -2202: "切向力超过软件限位",
+                -2203: "力矩超过软件限位",
+                -2204: "连续伺服期间无法读取六维力",
+                -2205: "连续伺服贴近超时",
+            }.get(ret, f"控制器/SDK 错误 {ret}")
+            data = result["force"]
+            raise RuntimeError(
+                f"{context}: {reason}; "
+                f"Fx={data[0]:.2f} Fy={data[1]:.2f} Fz={data[2]:.2f}N "
+                f"travel={result['travel_mm']:.2f}mm"
+            )
+        return result
 
     def _reading_available(self):
         data = self.read()
@@ -1799,6 +2191,28 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         print(f"连接机械臂 {ROBOT_IP}...")
         print(f"ROS2 控制服务: {ROS2_SERVICE_NAME}")
         print(f"ROS2 状态话题: {ROS2_STATE_TOPIC}")
+        if ROS2_SERVO_INTERPOLATION:
+            print(
+                f"力控短距离运动: {ROS2_SERVO_INTERPOLATION_HZ:g}Hz 五次插值 "
+                f"(最大 {ROS2_SERVO_MAX_DISTANCE_MM:g}mm，失败自动回退 MoveCart)"
+            )
+        if FORCE_CONTINUOUS_APPROACH:
+            print(
+                f"力控贴近: {FORCE_CONTINUOUS_APPROACH_HZ:g}Hz 连续伺服 "
+                f"(速度 {FORCE_CONTINUOUS_COARSE_SPEED_MM_S:g}/"
+                f"{FORCE_CONTINUOUS_CONTACT_SPEED_MM_S:g}/"
+                f"{FORCE_CONTINUOUS_FINE_SPEED_MM_S:g}/"
+                f"{FORCE_CONTINUOUS_NEAR_SPEED_MM_S:g}mm/s，"
+                "安全故障不回退 MoveCart)"
+            )
+        print(
+            "贴近姿态: "
+            + (
+                "保持当前 TCP 姿态并沿工具 Z 轴贴近"
+                if ROS2_KEEP_CURRENT_ORIENTATION
+                else "跟随局部深度平面法向"
+            )
+        )
         self.robot = Ros2RobotProxy(ROBOT_IP)
         self.robot.connect()
 
@@ -2249,6 +2663,20 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         point_mm = np.asarray(frame["point_mm"], dtype=np.float64)
         contact_axis_unit = np.asarray(frame["tool_z_unit"], dtype=np.float64)
         split_axis_unit = np.asarray(frame["split_axis_unit"], dtype=np.float64)
+        if ROS2_KEEP_CURRENT_ORIENTATION and self.motion_orientation is not None:
+            # FT_SetRCS(0) reports force in the active tool frame. When posture is
+            # frozen, move along that same tool Z axis so commanded penetration and
+            # measured Fz retain the same physical meaning.
+            contact_axis_unit = np.asarray(
+                _tool_z_unit_from_rpy(*self.motion_orientation),
+                dtype=np.float64,
+            )
+            projected_split = _project_axis_to_tool_plane(
+                split_axis_unit,
+                contact_axis_unit,
+            )
+            if projected_split is not None:
+                split_axis_unit = projected_split
         tcp_offset_mm = float(offset_mm) - float(TOOL_TIP_LENGTH_MM)
         pos = point_mm + contact_axis_unit * tcp_offset_mm + split_axis_unit * float(split_offset_mm)
         rx, ry, rz = frame["base_pose"]
@@ -2275,17 +2703,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             current = self.robot.get_actual_tcp_pose()
         except Exception:
             return None, None
-        pos_dist = math.sqrt(
-            (float(current[0]) - float(pose[0])) ** 2
-            + (float(current[1]) - float(pose[1])) ** 2
-            + (float(current[2]) - float(pose[2])) ** 2
-        )
-        ori_dist = max(
-            abs(float(current[3]) - float(pose[3])),
-            abs(float(current[4]) - float(pose[4])),
-            abs(float(current[5]) - float(pose[5])),
-        )
-        return pos_dist, ori_dist
+        return _pose_distance(current, pose)
 
     def _current_pose_close_to(
         self,
@@ -2326,13 +2744,33 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     self.force_controller.check_limits(context)
                 return True
 
-        ret = self.robot.MoveCart(
-            desc_pos=pose,
-            tool=ROS2_TOOL,
-            user=ROS2_USER,
-            vel=vel,
-            blendT=BLEND_BLOCKING,
-        )
+        try:
+            ret = self.robot.MoveCartInterpolated(
+                desc_pos=pose,
+                tool=ROS2_TOOL,
+                user=ROS2_USER,
+                vel=vel,
+            )
+        except Exception as exc:
+            print(
+                f"[Force] {context}: {ROS2_SERVO_INTERPOLATION_HZ:g}Hz "
+                f"插值不可用 ({exc})，回退到原 MoveCart"
+            )
+            ret = None
+        if ret not in {None, 0}:
+            print(
+                f"[Force] {context}: {ROS2_SERVO_INTERPOLATION_HZ:g}Hz "
+                f"插值运动返回 err={ret}，"
+                "回退到原 MoveCart"
+            )
+        if ret is None or ret != 0:
+            ret = self.robot.MoveCart(
+                desc_pos=pose,
+                tool=ROS2_TOOL,
+                user=ROS2_USER,
+                vel=vel,
+                blendT=BLEND_BLOCKING,
+            )
         if ret != 0:
             if close_success:
                 close, pos_dist, ori_dist = self._current_pose_close_to(
@@ -2543,6 +2981,31 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         return offset, False
                     offset = precontact_offset
                     time.sleep(max(0.03, float(FORCE_APPROACH_SETTLE_S)))
+
+        if FORCE_CONTINUOUS_APPROACH:
+            target_pose = self._pose_from_frame_offset(frame, max_offset, split_offset_mm)
+            result = self.force_controller.continuous_approach(
+                target_pose,
+                context,
+            )
+            planned_travel_mm = max(0.0, max_offset - offset)
+            travel_mm = max(0.0, min(planned_travel_mm, float(result["travel_mm"])))
+            offset = min(max_offset, offset + travel_mm)
+            data = result["force"]
+            force_n = self._force_axis_value(data)
+            if int(result["status"]) == 1:
+                print(
+                    f"[Force] {context}: 连续贴近达到目标力 "
+                    f"press={force_n:.2f}N, offset={offset:+.1f}mm, "
+                    f"travel={travel_mm:.1f}mm, elapsed={result['elapsed_s']:.2f}s"
+                )
+                return offset, True
+            print(
+                f"[Force] {context}: 连续贴近已到最大 offset={offset:+.1f}mm，"
+                f"仍未达到目标力 press={force_n:.2f}N, "
+                f"elapsed={result['elapsed_s']:.2f}s"
+            )
+            return offset, False
 
         while True:
             target_n = self._current_force_target_n()
@@ -4325,6 +4788,18 @@ def main():
             f"force_fen={FORCE_FEN_LATERAL_MM:.1f}mm "
             f"shun_recontact={'on' if FORCE_SHUN_RECONTACT else 'off'} "
             f"guard={'on' if FORCE_GUARD_ENABLE else 'off'}"
+        )
+        print(
+            f"  连续贴近: {'on' if FORCE_CONTINUOUS_APPROACH else 'off'} "
+            f"hz={FORCE_CONTINUOUS_APPROACH_HZ:g} "
+            f"speed={FORCE_CONTINUOUS_COARSE_SPEED_MM_S:g}/"
+            f"{FORCE_CONTINUOUS_CONTACT_SPEED_MM_S:g}/"
+            f"{FORCE_CONTINUOUS_FINE_SPEED_MM_S:g}/"
+            f"{FORCE_CONTINUOUS_NEAR_SPEED_MM_S:g}mm/s "
+            f"accel/decel={FORCE_CONTINUOUS_ACCEL_MM_S2:g}/"
+            f"{FORCE_CONTINUOUS_DECEL_MM_S2:g}mm/s^2 "
+            f"stable={FORCE_CONTINUOUS_TARGET_STABLE_SAMPLES} "
+            f"timeout={FORCE_CONTINUOUS_TIMEOUT_S:g}s"
         )
     else:
         print("  恒力控制: 关闭")

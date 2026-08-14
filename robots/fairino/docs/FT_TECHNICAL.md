@@ -356,17 +356,15 @@ press = FORCE_AXIS_SIGN * Fz
 
 ### 贴近和保压
 
-`_approach_to_target_force()` 从悬空位开始，沿 `tool_z_unit` 增加 `offset_mm`：
+`_approach_to_target_force()` 从悬空位开始，沿接触轴增加 `offset_mm`：
 
 1. 可选连续预贴近到 `-LASTTIME_FORCE_APPROACH_PRECONTACT_CLEARANCE_MM`。
-2. 循环读取当前按压力。
-3. 未到目标力时按阶段选择步长和速度：
-   - 粗贴近：`LASTTIME_FORCE_APPROACH_STEP_MM`
-   - 接触后：`LASTTIME_FORCE_APPROACH_CONTACT_STEP_MM`
-   - 接近目标：`LASTTIME_FORCE_APPROACH_FINE_STEP_MM`
-   - 近目标：`LASTTIME_FORCE_APPROACH_NEAR_STEP_MM`
-4. 达到目标力返回当前 offset。
-5. 达到最大 offset 仍未达目标力则返回失败。
+2. 默认调用控制服务 `ServoCartForceApproach`，在同一个 `ServoMoveStart` / `ServoMoveEnd` 会话中以 125 Hz 连续发送位姿。
+3. 服务内每周期读取六维力，按粗贴近、接触后、接近目标、近目标四档连续调速，并施加加减速限制。
+4. 滤波力只用于调速；目标力稳定计数和法向力、横向力、力矩保护使用原始力数据。
+5. 达到目标力或最大 offset 后结束伺服。超限、读力失败和超时会停止运动并返回错误，不回退到 `MoveCart`。
+
+设置 `FT_CONTINUOUS_FORCE_APPROACH=0` 可临时恢复旧分步贴近。保持当前 TCP 姿态时，位置偏移沿该姿态对应的实际工具 Z 轴计算，使运动方向与 `FT_GetForceTorqueRCS(1)` 的 Fz 判定一致。
 
 `_hold_target_force()` 在保压时间内执行比例微调：
 
@@ -602,7 +600,7 @@ robots/fairino/ft_agent_state/current_control.json
 
 ## 维护注意事项
 
-1. `run_lasttime_ros2.sh` 会设置 `LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION`，但 `ft.py` 当前读取的是 `FT_KEEP_CURRENT_ORIENTATION`。需要保持当前 TCP 姿态时，应设置 `FT_KEEP_CURRENT_ORIENTATION=1`。
+1. 姿态开关以 `FT_KEEP_CURRENT_ORIENTATION` 为准，同时兼容旧变量 `LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION`；`run_lasttime_ros2.sh` 默认启用保持当前 TCP 姿态。
 2. `run_lasttime_ros2.sh` 会为 `ft.py` 设置 `HOVER_HEIGHT_MM=50.0`，但 `ft.py` 实际使用 `BACK_HOVER_HEIGHT_MM` 和 `THIGH_HOVER_HEIGHT_MM`。调整悬空高度时应改这两个变量。
 3. 腿部内侧模式不是独立的内侧检测模型，而是在外侧中线检测结果上跳过前若干点。
 4. `Ros2ForceController.start()` 和 `_ft_control_cmd()` 是可用封装，但当前动作序列没有调用 `start()`。如果未来改为硬件 `FT_Control` 闭环，需要重新审查软件贴近和保压逻辑的叠加关系。
