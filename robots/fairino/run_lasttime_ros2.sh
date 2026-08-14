@@ -145,7 +145,8 @@ try:
         _exit(2)
 
     req = RemoteCmdInterface.Request()
-    req.cmd_str = "SetSpeed(30)"
+    # 启动探针只读检查连接与控制器错误码，不修改机械臂速度或模式。
+    req.cmd_str = "GetErrorCode()"
     future = client.call_async(req)
     rclpy.spin_until_future_complete(node, future, timeout_sec=call_wait_s)
     if not future.done() or future.exception() is not None or future.result() is None:
@@ -153,14 +154,14 @@ try:
         _exit(3)
 
     cmd_res = future.result().cmd_res
-    print(f"ROS2 控制探针返回: {cmd_res}")
+    print(f"ROS2 只读控制探针返回: {cmd_res}")
     pose = state["msg"]
     print(
         "ROS2 状态探针位姿: "
         f"{pose.cart_x_cur_pos:.3f}, {pose.cart_y_cur_pos:.3f}, {pose.cart_z_cur_pos:.3f}, "
         f"{pose.cart_a_cur_pos:.3f}, {pose.cart_b_cur_pos:.3f}, {pose.cart_c_cur_pos:.3f}"
     )
-    if str(cmd_res).strip() != "0":
+    if str(cmd_res).strip() != "0,0":
         print(f"PROBE_ERR: unexpected cmd result: {cmd_res}", file=sys.stderr)
         _exit(4)
     _exit(0)
@@ -205,10 +206,20 @@ source /opt/ros/humble/setup.bash
 source "${ROS2_WS}/install/setup.bash"
 reset_ros2_discovery
 mkdir -p "${RUNTIME_LIB_DIR}"
-FAIRINO_RUNTIME_LIB="${FAIRINO_RUNTIME_LIB:-${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2.2.3}"
-if [[ ! -f "${FAIRINO_RUNTIME_LIB}" ]]; then
-  FAIRINO_RUNTIME_LIB="${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2"
-fi
+runtime_lib_candidates=(
+  "${FAIRINO_RUNTIME_LIB:-}"
+  "${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2.2.3"
+  "${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2"
+  "${ROS2_WS}/fairino_hardware/libfairino/lib/libfairino.so.2.2.3"
+  "${ROS2_WS}/fairino_hardware/libfairino/lib/libfairino.so.2"
+)
+FAIRINO_RUNTIME_LIB=""
+for runtime_lib_candidate in "${runtime_lib_candidates[@]}"; do
+  if [[ -n "${runtime_lib_candidate}" && -f "${runtime_lib_candidate}" ]]; then
+    FAIRINO_RUNTIME_LIB="${runtime_lib_candidate}"
+    break
+  fi
+done
 if [[ ! -f "${FAIRINO_RUNTIME_LIB}" ]]; then
   echo "未找到 FAIRINO 运行库 libfairino.so" >&2
   exit 1

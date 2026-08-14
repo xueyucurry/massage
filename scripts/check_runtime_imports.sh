@@ -10,6 +10,11 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
   echo "Python environment not found: ${PYTHON_BIN}" >&2
   exit 1
 fi
+if [[ ! -f "${ROS2_WS}/install/setup.bash" ]]; then
+  echo "FAIRINO ROS2 environment not built: ${ROS2_WS}/install/setup.bash" >&2
+  echo "Build it with: cd ${ROS2_WS} && source /opt/ros/humble/setup.bash && PYTHONNOUSERSITE=1 colcon build --symlink-install" >&2
+  exit 1
+fi
 
 set +u
 source /opt/ros/humble/setup.bash

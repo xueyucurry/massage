@@ -182,6 +182,8 @@ public:
 private:
     std::unique_ptr<FRRobot> _ptr_robot;//机械臂SDK库指针
     ROBOT_STATE_PKG _robot_realtime_state;//从SDK获取的机械臂实时状态结构体
+    void _state_recv_callback();
+    rclcpp::Publisher<robot_feedback_msg>::SharedPtr _state_publisher;
     rclcpp::TimerBase::SharedPtr _locktimer;
 
     int lose_connect_times = 0;

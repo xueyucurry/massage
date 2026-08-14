@@ -57,7 +57,7 @@
     ./massage start
         └── run_lasttime_ros2.sh
             ├── 启动/复用 ros2_cmd_server + MoveIt
-            ├── 探针 SetSpeed + nonrt_state_data
+            ├── 只读探针 GetErrorCode + nonrt_state_data
             └── python ft.py
                 ├── OpenCV 检测窗口
                 ├── 按 s 锁定并保存轨迹
@@ -220,7 +220,7 @@ pose = [x, y, z, rx, ry, rz]
 标定程序通过 `./massage calibrate` 启动，默认输出：
 
 ```text
-/home/massage/massage/shared/calibration/camera_to_robot.json
+/path/to/massage/shared/calibration/camera_to_robot.json
 ```
 
 `robots/fairino/camera_to_robot.json` 是指向该共享文件的软链接。运行时加载路径由 `dianjing._load_camera_to_robot_matrix()` 处理，查找顺序包含当前工作目录、`robots/fairino/camera_to_robot.json` 和 `shared/calibration/camera_to_robot.json`。

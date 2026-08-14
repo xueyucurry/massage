@@ -17,7 +17,7 @@
 所有日常操作都从仓库根目录的 `./massage` 启动：
 
 ```bash
-cd /home/massage/massage
+cd /path/to/massage
 ./massage gui
 ./massage start
 ./massage stop
@@ -50,7 +50,7 @@ cd /home/massage/massage
 
 ## 运行约束
 
-- 目标环境为 WSL2 Ubuntu 22.04 + ROS2 Humble。
+- 目标环境为 Ubuntu 22.04 + ROS2 Humble；支持原生 Ubuntu，WSL2 仅作为兼容环境。
 - `robots/fairino/ft.py` 是按摩执行主程序。
 - 小智由 `./massage gui` 启动时默认启用按摩专用模式，只暴露系统和 FAIRINO
   按摩工具，并禁用日程提醒插件。

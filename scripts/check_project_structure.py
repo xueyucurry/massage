@@ -67,8 +67,8 @@ def main() -> int:
                 errors.append(f"missing expected setting in {relative_path}: {fragment}")
 
     sdk_loader = ROOT / "robots/fairino/fairino/__init__.py"
-    if sdk_loader.is_file() and "/home/franka" in sdk_loader.read_text(encoding="utf-8"):
-        errors.append("FAIRINO SDK loader still depends on /home/franka")
+    if sdk_loader.is_file() and "/home/" in sdk_loader.read_text(encoding="utf-8"):
+        errors.append("FAIRINO SDK loader still depends on an absolute home path")
 
     if errors:
         print("Project structure check failed:", file=sys.stderr)

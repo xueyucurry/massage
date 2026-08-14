@@ -6,7 +6,7 @@
 若需与 demo 一致流程，加 --full-init（会走 init_force_sensor，含校零与负载置零）。
 
 用法:
-  cd /home/massage/massage/robots/fairino
+  cd /path/to/massage/robots/fairino
   ../../env/.venv/bin/python test_force_sensor.py
   ../../env/.venv/bin/python test_force_sensor.py --ip 192.168.58.2 --duration 15 --hz 10
   ../../env/.venv/bin/python test_force_sensor.py --full-init

@@ -11,7 +11,7 @@ ROS bag 处理仍保留为可选模式：需要时显式加 `--source bag --bags
 使用项目现有虚拟环境：
 
 ```bash
-/home/massage/massage/env/.venv/bin/python
+/path/to/massage/env/.venv/bin/python
 ```
 
 已补齐的主要依赖：
@@ -37,13 +37,13 @@ mmpose 1.3.2
 RTMPose-M COCO 配置文件由脚本自动从当前 venv 的 `mmpose` 包内解析：
 
 ```text
-/home/massage/massage/env/.venv/lib/python3.10/site-packages/mmpose/.mim/configs/body_2d_keypoint/rtmpose/coco/rtmpose-m_8xb256-420e_coco-256x192.py
+/path/to/massage/env/.venv/lib/python3.10/site-packages/mmpose/.mim/configs/body_2d_keypoint/rtmpose/coco/rtmpose-m_8xb256-420e_coco-256x192.py
 ```
 
 权重已下载到：
 
 ```text
-/home/massage/massage/robots/fairino/weights/rtmpose-m_simcc-coco_pt-aic-coco_420e-256x192-d8dd5ca4_20230127.pth
+/path/to/massage/robots/fairino/weights/rtmpose-m_simcc-coco_pt-aic-coco_420e-256x192-d8dd5ca4_20230127.pth
 ```
 
 离线重新部署时，手动下载地址：
@@ -59,15 +59,15 @@ https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_simcc-coco
 默认就是 D435i 实时模式：
 
 ```bash
-cd /home/massage/massage/robots/fairino
-/home/massage/massage/env/.venv/bin/python rtmpose.py
+cd /path/to/massage/robots/fairino
+/path/to/massage/env/.venv/bin/python rtmpose.py
 ```
 
 也可以用小写包装入口：
 
 ```bash
-cd /home/massage/massage/robots/fairino
-/home/massage/massage/env/.venv/bin/python rtmpose.py
+cd /path/to/massage/robots/fairino
+/path/to/massage/env/.venv/bin/python rtmpose.py
 ```
 
 窗口中按 `q` 或 `ESC` 退出。
@@ -75,7 +75,7 @@ cd /home/massage/massage/robots/fairino
 常用参数：
 
 ```bash
-/home/massage/massage/env/.venv/bin/python rtmpose.py \
+/path/to/massage/env/.venv/bin/python rtmpose.py \
   --device cuda:0 \
   --side nearest \
   --width 640 \
@@ -111,8 +111,8 @@ rtmpose_hip_knee_output/realsense_rtmpose_hip_knee_*.json
 如果以后还需要处理 bag：
 
 ```bash
-cd /home/massage/massage/robots/fairino
-/home/massage/massage/env/.venv/bin/python rtmpose.py \
+cd /path/to/massage/robots/fairino
+/path/to/massage/env/.venv/bin/python rtmpose.py \
   --source bag \
   --bags /path/to/file.bag \
   --output-dir rtmpose_hip_knee_output
@@ -136,7 +136,7 @@ bag topic 自动匹配：
 依赖导入：
 
 ```bash
-/home/massage/massage/env/.venv/bin/python - <<'PY'
+/path/to/massage/env/.venv/bin/python - <<'PY'
 import cv2, numpy, torch, pyrealsense2
 from mmpose.apis import init_model, inference_topdown
 print("ok")
@@ -146,8 +146,8 @@ PY
 模型初始化和单帧推理：
 
 ```bash
-cd /home/massage/massage/robots/fairino
-/home/massage/massage/env/.venv/bin/python - <<'PY'
+cd /path/to/massage/robots/fairino
+/path/to/massage/env/.venv/bin/python - <<'PY'
 import numpy as np
 from rtmpose_detector import DEFAULT_RTMPOSE_CONFIG, DEFAULT_RTMPOSE_WEIGHTS, RTMPoseHipKneeDetector
 

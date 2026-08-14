@@ -55,23 +55,23 @@ api.execute_actions(
 检测并保存轨迹：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 python3 ft_agent_api.py detect --target back
 ```
 
 检测、保存轨迹并执行完整动作：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 python3 ft_agent_api.py run --target back --actions dian_jin,fen_jin,shun_jin
 ```
 
 加载已有轨迹，只执行顺筋：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 python3 ft_agent_api.py execute \
-  --trajectory /home/massage/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_YYYYMMDD_HHMMSS.json \
+  --trajectory /path/to/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_YYYYMMDD_HHMMSS.json \
   --actions shun_jin
 ```
 
@@ -134,13 +134,13 @@ MCP `detect` 工具返回 `success=true` 只表示检测任务已启动，不表
 会话状态默认保存到：
 
 ```text
-/home/massage/massage/robots/fairino/ft_agent_state/current_session.json
+/path/to/massage/robots/fairino/ft_agent_state/current_session.json
 ```
 
 控制文件默认保存到：
 
 ```text
-/home/massage/massage/robots/fairino/ft_agent_state/current_control.json
+/path/to/massage/robots/fairino/ft_agent_state/current_control.json
 ```
 
 状态中记录 `target`、`trajectory_path`、`actions`、`stage`、`current_action`、`current_point_index`、`current_repeat_index`、`current_step_index`、`resume_stage`、`resume_action`、`resume_point_index`、`resume_repeat_index`、`resume_step_index`、`robot_tcp_pose`、`robot_joints_deg`、`force_target_n`、`worker_pid` 等字段。
@@ -187,7 +187,7 @@ GUI 只负责展示和发起语音/文字意图，不直接控制机械臂。机
 `./massage calibrate` 会更新：
 
 ```text
-/home/massage/massage/shared/calibration/camera_to_robot.json
+/path/to/massage/shared/calibration/camera_to_robot.json
 ```
 
 `robots/fairino/camera_to_robot.json` 指向同一个共享文件。检测阶段会读取当前最新标定矩阵，把相机点转换成机器人坐标后保存到轨迹 JSON；执行阶段只加载轨迹中的 `frames[*].point_mm` 和 `points_mm`，不会重新读取标定矩阵重新计算旧轨迹。

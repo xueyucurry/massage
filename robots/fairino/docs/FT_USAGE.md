@@ -23,7 +23,7 @@
 1. FAIRINO 控制器网络可达，默认 IP 为 `192.168.58.2`。
 2. ROS 2 Humble 环境和 FAIRINO ROS 2 工作区已构建，默认工作区为 `robots/fairino/fairino_ros2/frcobot_ros2-master`。
 3. RealSense 相机可用，RGB 和深度帧稳定。
-4. 标定矩阵可加载，通常为 `/home/massage/massage/shared/calibration/camera_to_robot.json`。
+4. 标定矩阵可加载，通常为 `/path/to/massage/shared/calibration/camera_to_robot.json`。
 5. 六维力传感器已接入控制柜 RS485，总线参数与 `LASTTIME_FORCE_SENSOR_BUS` 一致。
 6. 末端校零前必须悬空且无外部接触。
 7. 实机运行时操作员必须在急停按钮旁，首次运行建议降低目标力和速度。
@@ -33,14 +33,14 @@
 推荐通过启动脚本运行，脚本会拉起或复用 FAIRINO ROS 2 控制服务，并做服务探针：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 ```
 
 启动后如果是交互终端，程序会提示选择按摩部位。也可以用环境变量跳过菜单：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 MASSAGE_TARGET=back LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 MASSAGE_TARGET=leg LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 MASSAGE_TARGET=leg_inner LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
@@ -53,7 +53,7 @@ MASSAGE_TARGET=leg_inner LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 日常操作优先从项目根目录使用 `./massage`：
 
 ```bash
-cd /home/massage/massage
+cd /path/to/massage
 ./massage gui
 ```
 
@@ -126,14 +126,14 @@ cd /home/massage/massage
 语音控制使用小智 GUI：
 
 ```bash
-cd /home/massage/massage
+cd /path/to/massage
 ./massage gui
 ```
 
 启动后 GUI 会打开“FAIRINO 按摩机器人”操作台，显示部位、轨迹、阶段、动作、点位、目标力度、进度、状态消息和常用快捷指令。GUI 状态来自：
 
 ```text
-/home/massage/massage/robots/fairino/ft_agent_state/current_session.json
+/path/to/massage/robots/fairino/ft_agent_state/current_session.json
 ```
 
 典型语音流程：
@@ -218,20 +218,20 @@ cd /home/massage/massage
 相机到机械臂标定通过顶层脚本启动：
 
 ```bash
-cd /home/massage/massage
+cd /path/to/massage
 ./massage calibrate
 ```
 
 标定程序为：
 
 ```text
-/home/massage/massage/shared/calibration/calibrate_camera_to_robot_aruco.py
+/path/to/massage/shared/calibration/calibrate_camera_to_robot_aruco.py
 ```
 
 默认结果保存到：
 
 ```text
-/home/massage/massage/shared/calibration/camera_to_robot.json
+/path/to/massage/shared/calibration/camera_to_robot.json
 ```
 
 `robots/fairino/camera_to_robot.json` 是指向该共享文件的软链接。背部和腿部检测在生成新轨迹时会读取当前最新的 `camera_to_robot.json`，并把转换后的机器人坐标写入轨迹 JSON 的 `frames[*].point_mm` 和 `points_mm`。
@@ -247,7 +247,7 @@ cd /home/massage/massage
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CALIBRATION_PYTHON` | `/home/massage/massage/env/.venv/bin/python` | 运行标定程序的 Python |
+| `CALIBRATION_PYTHON` | `/path/to/massage/env/.venv/bin/python` | 运行标定程序的 Python |
 | `ROBOT_IP` | `192.168.58.2` | FAIRINO 控制器 IP |
 | `CALIB_OUTPUT_FILE` | `camera_to_robot.json` | 标定矩阵输出文件 |
 | `CALIB_REPORT_FILE` | `camera_to_robot_aruco_report.json` | 标定报告输出文件 |
@@ -261,7 +261,7 @@ cd /home/massage/massage
 轨迹默认保存到：
 
 ```text
-/home/massage/massage/robots/fairino/ft_locked_trajectory_output
+/path/to/massage/robots/fairino/ft_locked_trajectory_output
 ```
 
 文件命名：
@@ -292,7 +292,7 @@ JSON 主要字段：
 腿部模式还会通过 `thigh_outerline_confirm.py` 保存原始确认结果，默认目录：
 
 ```text
-/home/massage/massage/robots/fairino/rtmpose_thigh_confirm_output
+/path/to/massage/robots/fairino/rtmpose_thigh_confirm_output
 ```
 
 ## 常用配置
@@ -407,28 +407,28 @@ JSON 主要字段：
 只检查 ROS 2 控制服务：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 LASTTIME_ROS2_PROBE_ONLY=1 LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 ```
 
 背部模式，降低目标力到 10 N：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 MASSAGE_TARGET=back LASTTIME_FORCE_N=10 LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 ```
 
 腿部外侧模式，指定偏移方向和目标力：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 MASSAGE_TARGET=leg THIGH_DIRECTION=image-down THIGH_OFFSET_MM=25 THIGH_OUTER_FORCE_N=40 LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 ```
 
 临时关闭力控，仅做位置动作分支：
 
 ```bash
-cd /home/massage/massage/robots/fairino
+cd /path/to/massage/robots/fairino
 MASSAGE_TARGET=back LASTTIME_ROS2_FORCE=0 LASTTIME_ROS2_SCRIPT=ft.py ./run_lasttime_ros2.sh
 ```
 

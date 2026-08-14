@@ -2,22 +2,35 @@
 
 ## 开发环境
 
-- Windows 11 + WSL2 Ubuntu 22.04
+- 原生 Ubuntu 22.04（推荐）；也兼容 Windows 11 + WSL2 Ubuntu 22.04
 - ROS2 Humble
-- 项目目录 `/home/massage/massage`
-- 项目 Python 环境 `/home/massage/massage/env/.venv`
+- 项目目录由实际克隆位置决定，以下用 `/path/to/massage` 表示
+- 项目 Python 环境 `/path/to/massage/env/.venv`
 - 小智 Python 环境由根启动器中的 `XIAOZHI_PYTHON` 确定
 - FAIRINO 控制器默认地址 `192.168.58.2`
 
 先运行以下命令了解本机可用入口：
 
 ```bash
-cd /home/massage/massage
+cd /path/to/massage
 ./massage help
 ```
 
-不要在 Ubuntu 终端内运行 `wsl` 命令。`wsl -d Ubuntu-22.04` 和
-`wsl --terminate Ubuntu-22.04` 只能在 Windows PowerShell 中执行。
+首次在一台机器上运行时，需要在本机生成 ROS2 构建产物，不要直接复用其他机器或
+WSL 中的 `build/`、`install/`、`log/`：
+
+```bash
+cd /path/to/massage/robots/fairino/fairino_ros2/frcobot_ros2-master
+source /opt/ros/humble/setup.bash
+PYTHONNOUSERSITE=1 colcon build --symlink-install
+```
+
+`PYTHONNOUSERSITE=1` 可避免用户目录中的新版 Python 工具包覆盖 Ubuntu/ROS2
+自带依赖。
+
+原生 Ubuntu 不需要任何 `wsl` 或 `usbipd` 命令。仅在 WSL2 环境中，`wsl -d
+Ubuntu-22.04`、`wsl --terminate Ubuntu-22.04` 和 `usbipd` 才应从 Windows
+PowerShell 执行。
 
 ## 修改顺序
 
@@ -66,7 +79,7 @@ print(fairino.SDK_MODULE)"
 ```
 
 输出必须位于当前仓库的 `robots/fairino/vendor/fairino_sdk/Robot.py`，不应指向
-`/home/franka` 或其他项目副本。
+其他用户主目录或项目副本。
 
 涉及视觉时先做只读检测；涉及力控时依次做传感器只读、悬停、低速低力接触和
 完整动作。不要把 GUI 能启动视为机械臂控制已经验证。

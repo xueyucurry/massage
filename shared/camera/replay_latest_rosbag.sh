@@ -61,10 +61,10 @@ search_dir = os.environ["BAG_SEARCH_DIR"]
 candidates = []
 patterns = [
     os.path.join(search_dir, "*"),
-    "/home/massage/realsense_bag",
-    "/home/massage/realsense_bag_*",
-    "/home/massage/*.db3",
-    "/home/massage/*.mcap",
+    os.path.expanduser("~/realsense_bag"),
+    os.path.expanduser("~/realsense_bag_*"),
+    os.path.expanduser("~/*.db3"),
+    os.path.expanduser("~/*.mcap"),
 ]
 
 for pattern in patterns:
@@ -184,8 +184,23 @@ if [[ -n "$topic_prefix" ]]; then
 fi
 
 if [[ $with_viewer -eq 1 ]]; then
-  export DISPLAY="${DISPLAY:-:0}"
-  export XAUTHORITY="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}"
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "未检测到图形桌面会话，不能启动 OpenCV viewer。" >&2
+    echo "请在本机桌面终端运行，或去掉 --viewer 仅回放 rosbag。" >&2
+    exit 1
+  fi
+  if [[ -z "${XAUTHORITY:-}" ]]; then
+    xauthority_candidates=(
+      "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gdm/Xauthority"
+      "${HOME}/.Xauthority"
+    )
+    for candidate in "${xauthority_candidates[@]}"; do
+      if [[ -r "$candidate" ]]; then
+        export XAUTHORITY="$candidate"
+        break
+      fi
+    done
+  fi
   if [[ -f "$VIEWER_SCRIPT" ]]; then
     mapfile -t existing_viewers < <(pgrep -f "$VIEWER_SCRIPT" || true)
     if [[ ${#existing_viewers[@]} -gt 0 ]]; then

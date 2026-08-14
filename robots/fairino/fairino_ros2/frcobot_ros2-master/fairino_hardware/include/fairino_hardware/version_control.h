@@ -4,12 +4,12 @@
 //版本号规则：V(VERSION_MAJOR).(VESION_MINOR).(VERSION_MINOR2)
 #define VERSION_MAJOR 3
 #define VERSION_MINOR 0
-#define VERSION_MINOR2 0
+#define VERSION_MINOR2 1
 
 //用于记录对应机械臂软件版本号
 #define VERSION_ROBOT_MARJOR 3
 #define VERSION_ROBOT_MINOR 8
-#define VERSION_ROBOT_MINOR2 2
+#define VERSION_ROBOT_MINOR2 8
 
 
 //用于记录fairino_msgs版本号

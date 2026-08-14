@@ -1,4 +1,5 @@
 #include "fairino_hardware/command_server.hpp"
+#include <algorithm>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <algorithm>
@@ -239,7 +240,10 @@ robot_command_thread::robot_command_thread(const std::string node_name):rclcpp::
         }
     }
 
-    _locktimer = this->create_wall_timer(10ms,std::bind(&robot_command_thread::_getRobotRTState,this));
+    // V3.8.8-LA 的 8081 状态结构与旧版 _CTRL_STATE 不兼容。使用 SDK
+    // 已校验长度和校验和的 20004 实时状态，避免错位发布法兰位姿和六维力。
+    _state_publisher = this->create_publisher<robot_feedback_msg>("nonrt_state_data",1);
+    _locktimer = this->create_wall_timer(10ms,std::bind(&robot_command_thread::_state_recv_callback,this));
     RCLCPP_INFO(rclcpp::get_logger(LOGGER_NAME),msgout[msg_id(connect_success)]);
     /*********************************************************************************************/
 }
@@ -382,6 +386,125 @@ void robot_command_thread::_getRobotRTState(){
     _ptr_robot->GetRobotRealTimeState(&tmp);
     mainerrcode = tmp.main_code;
     suberrcode = tmp.sub_code;
+}
+
+/**
+ * @brief 通过 FAIRINO SDK 的 20004 实时接口发布本项目使用的状态消息。
+ *
+ * 该控制器返回的 8081 帧长度为 10622，与旧版 _CTRL_STATE 不一致；继续按
+ * 旧结构前缀解析会让 FT_data 和 flange_cur_pos 等字段错位。当前 SDK 的
+ * ROBOT_STATE_PKG 与控制器 20004 帧严格匹配（data_len + 7 == sizeof）。
+ */
+void robot_command_thread::_state_recv_callback(){
+    static ROBOT_STATE_PKG ctrl_state{};
+    static uint8_t last_frame_cnt = 0;
+    static bool have_frame = false;
+    static rclcpp::Time last_frame_change = this->now();
+
+    const int res = _ptr_robot->GetRobotRealTimeState(&ctrl_state);
+    const size_t packet_size = static_cast<size_t>(ctrl_state.data_len) + 7;
+    if(res != 0 || ctrl_state.frame_head != 0x5A5A || packet_size != sizeof(ROBOT_STATE_PKG)){
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "20004实时状态无效(res=%d, head=0x%04x, actual=%zu, expected=%zu)，停止发布状态。",
+            res,
+            static_cast<unsigned int>(ctrl_state.frame_head),
+            packet_size,
+            sizeof(ROBOT_STATE_PKG)
+        );
+        return;
+    }
+
+    const auto now = this->now();
+    if(!have_frame || ctrl_state.frame_cnt != last_frame_cnt){
+        last_frame_cnt = ctrl_state.frame_cnt;
+        last_frame_change = now;
+        have_frame = true;
+    }else if((now - last_frame_change).seconds() > 2.0){
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "20004实时状态超过2秒未更新，停止发布陈旧状态。"
+        );
+        return;
+    }
+
+    mainerrcode = ctrl_state.main_code;
+    suberrcode = ctrl_state.sub_code;
+
+    auto msg = robot_feedback_msg();
+    msg.main_error_code = static_cast<uint32_t>(std::max(ctrl_state.main_code, 0));
+    msg.sub_error_code = static_cast<uint32_t>(std::max(ctrl_state.sub_code, 0));
+
+    msg.j1_cur_pos = ctrl_state.jt_cur_pos[0];
+    msg.j2_cur_pos = ctrl_state.jt_cur_pos[1];
+    msg.j3_cur_pos = ctrl_state.jt_cur_pos[2];
+    msg.j4_cur_pos = ctrl_state.jt_cur_pos[3];
+    msg.j5_cur_pos = ctrl_state.jt_cur_pos[4];
+    msg.j6_cur_pos = ctrl_state.jt_cur_pos[5];
+
+    msg.j1_cur_tor = ctrl_state.jt_cur_tor[0];
+    msg.j2_cur_tor = ctrl_state.jt_cur_tor[1];
+    msg.j3_cur_tor = ctrl_state.jt_cur_tor[2];
+    msg.j4_cur_tor = ctrl_state.jt_cur_tor[3];
+    msg.j5_cur_tor = ctrl_state.jt_cur_tor[4];
+    msg.j6_cur_tor = ctrl_state.jt_cur_tor[5];
+
+    msg.cart_x_cur_pos = ctrl_state.tl_cur_pos[0];
+    msg.cart_y_cur_pos = ctrl_state.tl_cur_pos[1];
+    msg.cart_z_cur_pos = ctrl_state.tl_cur_pos[2];
+    msg.cart_a_cur_pos = ctrl_state.tl_cur_pos[3];
+    msg.cart_b_cur_pos = ctrl_state.tl_cur_pos[4];
+    msg.cart_c_cur_pos = ctrl_state.tl_cur_pos[5];
+
+    msg.flange_x_cur_pos = ctrl_state.flange_cur_pos[0];
+    msg.flange_y_cur_pos = ctrl_state.flange_cur_pos[1];
+    msg.flange_z_cur_pos = ctrl_state.flange_cur_pos[2];
+    msg.flange_a_cur_pos = ctrl_state.flange_cur_pos[3];
+    msg.flange_b_cur_pos = ctrl_state.flange_cur_pos[4];
+    msg.flange_c_cur_pos = ctrl_state.flange_cur_pos[5];
+
+    msg.exaxispos1 = ctrl_state.extAxisStatus[0].pos;
+    msg.exaxispos2 = ctrl_state.extAxisStatus[1].pos;
+    msg.exaxispos3 = ctrl_state.extAxisStatus[2].pos;
+    msg.exaxispos4 = ctrl_state.extAxisStatus[3].pos;
+
+    msg.ft_fx_data = ctrl_state.ft_sensor_data[0];
+    msg.ft_fy_data = ctrl_state.ft_sensor_data[1];
+    msg.ft_fz_data = ctrl_state.ft_sensor_data[2];
+    msg.ft_tx_data = ctrl_state.ft_sensor_data[3];
+    msg.ft_ty_data = ctrl_state.ft_sensor_data[4];
+    msg.ft_tz_data = ctrl_state.ft_sensor_data[5];
+    msg.ft_actstatus = ctrl_state.ft_sensor_active;
+
+    msg.robot_mode = ctrl_state.robot_mode;
+    msg.tool_num = static_cast<uint8_t>(std::max(ctrl_state.tool, 0));
+    msg.work_num = static_cast<uint8_t>(std::max(ctrl_state.user, 0));
+    msg.prg_state = ctrl_state.program_state;
+    msg.dgt_output_h = ctrl_state.cl_dgt_output_h;
+    msg.dgt_output_l = ctrl_state.cl_dgt_output_l;
+    msg.tl_dgt_output_l = ctrl_state.tl_dgt_output_l;
+    msg.dgt_input_h = ctrl_state.cl_dgt_input_h;
+    msg.dgt_input_l = ctrl_state.cl_dgt_input_l;
+    msg.tl_dgt_input_l = ctrl_state.tl_dgt_input_l;
+    msg.emg = ctrl_state.EmergencyStop;
+    msg.btn_box_stop_signa = ctrl_state.EmergencyStop;
+    msg.robot_motion_done = ctrl_state.motion_done == 1 ? 1 : 0;
+    msg.grip_motion_done = ctrl_state.gripper_motiondone;
+    msg.collision_err = ctrl_state.collisionState;
+
+    msg.weldbreakoffstate = ctrl_state.weldingBreakOffState.breakOffState;
+    msg.weldarcstate = ctrl_state.weldingBreakOffState.weldArcState;
+    msg.endluaerrcode = ctrl_state.endLuaErrCode;
+    msg.gripperfaultnum = ctrl_state.gripper_fault;
+    msg.version = "V" + std::to_string(VERSION_MSG_MARJOR) + "." +
+                  std::to_string(VERSION_MSG_MINOR) + std::to_string(VERSION_MSG_MINOR2);
+    msg.timestamp = RCL_NS_TO_S(now.nanoseconds());
+
+    _state_publisher->publish(msg);
 }
 
 

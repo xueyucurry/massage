@@ -55,7 +55,7 @@ Usage:
   ./massage force-monitor Open the read-only force sensor monitor
   ./massage calibrate  Start RealSense + ArUco camera-to-robot calibration
   ./massage adjust-lines Open the live four-line offset editor
-  ./massage camera-check Ensure RealSense is attached and readable in WSL
+  ./massage camera-check Ensure RealSense is attached and readable
   ./massage record-home Record current TCP pose as start/stop return pose
   ./massage home        Move to recorded start/stop return pose
   ./massage help       Show this help
@@ -101,6 +101,11 @@ flag_enabled() {
   esac
 }
 
+is_wsl() {
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] \
+    || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null
+}
+
 realsense_attached() {
   command -v lsusb >/dev/null 2>&1 \
     && lsusb 2>/dev/null \
@@ -117,12 +122,12 @@ ensure_realsense_attached() {
   local i
 
   if realsense_attached; then
-    echo "RealSense 已连接到 WSL (${hardware_id})。"
+    echo "RealSense 已连接 (${hardware_id})。"
     return 0
   fi
 
-  echo "WSL 中未检测到 RealSense (${hardware_id})。"
-  if [[ -n "${WSL_DISTRO_NAME:-}" ]] && flag_enabled "${auto_attach}"; then
+  echo "当前 Linux 环境未检测到 RealSense (${hardware_id})。" >&2
+  if is_wsl && flag_enabled "${auto_attach}"; then
     if command -v usbipd.exe >/dev/null 2>&1; then
       echo "正在通过 usbipd 自动挂载 RealSense..."
       attach_output="$(
@@ -143,14 +148,20 @@ ensure_realsense_attached() {
       attach_rc=127
       echo "WSL 无法调用 usbipd.exe，不能自动挂载相机。" >&2
     fi
-  elif [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+  elif is_wsl; then
     echo "RealSense 自动挂载已关闭。" >&2
   fi
 
-  echo "RealSense 挂载失败 (usbipd exit=${attach_rc})。" >&2
-  echo "请确认相机已插入，并在 Windows 管理员 PowerShell 执行：" >&2
-  echo "  usbipd bind --hardware-id ${hardware_id}" >&2
-  echo "然后重新运行 ./massage；普通 attach 将由启动脚本自动完成。" >&2
+  if is_wsl; then
+    echo "RealSense 挂载失败 (usbipd exit=${attach_rc})。" >&2
+    echo "请确认相机已插入，并在 Windows 管理员 PowerShell 执行：" >&2
+    echo "  usbipd bind --hardware-id ${hardware_id}" >&2
+    echo "然后重新运行 ./massage；普通 attach 将由启动脚本自动完成。" >&2
+  else
+    echo "请确认相机已直接连接到本机 USB 3.x 端口，并执行以下命令核对：" >&2
+    echo "  lsusb -d ${hardware_id}" >&2
+    echo "若设备可见但程序无法访问，请检查 RealSense udev 规则和当前用户权限。" >&2
+  fi
 
   if flag_enabled "${required}"; then
     return 1
@@ -166,7 +177,7 @@ setup_ros_env() {
   fi
   if [[ ! -f "${ROS2_WS}/install/setup.bash" ]]; then
     echo "找不到 FAIRINO ROS2 install 环境: ${ROS2_WS}/install/setup.bash" >&2
-    echo "请先在 ${ROS2_WS} 中执行: source /opt/ros/humble/setup.bash && colcon build --symlink-install" >&2
+    echo "请先在 ${ROS2_WS} 中执行: source /opt/ros/humble/setup.bash && PYTHONNOUSERSITE=1 colcon build --symlink-install" >&2
     exit 1
   fi
 
@@ -176,10 +187,21 @@ setup_ros_env() {
   set -u
 
   mkdir -p "${RUNTIME_LIB_DIR}"
-  FAIRINO_RUNTIME_LIB="${FAIRINO_RUNTIME_LIB:-${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2.2.3}"
-  if [[ ! -f "${FAIRINO_RUNTIME_LIB}" ]]; then
-    FAIRINO_RUNTIME_LIB="${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2"
-  fi
+  local runtime_lib_candidate
+  local runtime_lib_candidates=(
+    "${FAIRINO_RUNTIME_LIB:-}"
+    "${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2.2.3"
+    "${ROS2_WS}/install/fairino_hardware/lib/libfairino.so.2"
+    "${ROS2_WS}/fairino_hardware/libfairino/lib/libfairino.so.2.2.3"
+    "${ROS2_WS}/fairino_hardware/libfairino/lib/libfairino.so.2"
+  )
+  FAIRINO_RUNTIME_LIB=""
+  for runtime_lib_candidate in "${runtime_lib_candidates[@]}"; do
+    if [[ -n "${runtime_lib_candidate}" && -f "${runtime_lib_candidate}" ]]; then
+      FAIRINO_RUNTIME_LIB="${runtime_lib_candidate}"
+      break
+    fi
+  done
   if [[ ! -f "${FAIRINO_RUNTIME_LIB}" ]]; then
     echo "未找到 FAIRINO 运行库 libfairino.so" >&2
     exit 1
@@ -274,7 +296,8 @@ try:
         _exit(2)
 
     req = RemoteCmdInterface.Request()
-    req.cmd_str = "SetSpeed(30)"
+    # 启动探针只读检查连接与控制器错误码，不修改机械臂速度或模式。
+    req.cmd_str = "GetErrorCode()"
     future = client.call_async(req)
     rclpy.spin_until_future_complete(node, future, timeout_sec=call_wait_s)
     if not future.done() or future.exception() is not None or future.result() is None:
@@ -282,14 +305,14 @@ try:
         _exit(3)
 
     cmd_res = str(future.result().cmd_res).strip()
-    print(f"ROS2 控制探针返回: {cmd_res}")
+    print(f"ROS2 只读控制探针返回: {cmd_res}")
     msg = state["msg"]
     print(
         "ROS2 状态探针位姿: "
         f"{msg.cart_x_cur_pos:.3f}, {msg.cart_y_cur_pos:.3f}, {msg.cart_z_cur_pos:.3f}, "
         f"{msg.cart_a_cur_pos:.3f}, {msg.cart_b_cur_pos:.3f}, {msg.cart_c_cur_pos:.3f}"
     )
-    _exit(0 if cmd_res == "0" else 4)
+    _exit(0 if cmd_res == "0,0" else 4)
 finally:
     node.destroy_subscription(sub)
     node.destroy_node()
@@ -937,7 +960,7 @@ run_xiaozhi_gui() {
     fi
   fi
 
-  if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+  if is_wsl; then
     export QT_QPA_PLATFORM="${XIAOZHI_QT_QPA_PLATFORM:-xcb}"
     export QT_SCALE_FACTOR="${XIAOZHI_QT_SCALE_FACTOR:-1.5}"
     export QT_IM_MODULE="${XIAOZHI_QT_IM_MODULE:-fcitx}"
