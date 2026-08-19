@@ -283,7 +283,12 @@ transit_z = max(current_z, target_z + ROS2_TRANSIT_MARGIN_MM, ROS2_LIFT_SAFE_Z_M
 2. 高位平移到目标 XY。
 3. 下降到目标位姿。
 
-`_move_pose_segmented()` 会把长距离运动拆成最大 `ROS2_SEGMENT_MAX_STEP_MM` 的小段，并受 `ROS2_SEGMENT_MAX_STEPS` 和 `ROS2_SEGMENT_TIMEOUT_S` 限制。
+`_move_pose_segmented()` 会先把每条直线作为一个原生 MoveL 连续执行，消除固定
+50 mm 分段造成的周期性停顿。只有直达失败并停止运动后，才按最大
+`ROS2_SEGMENT_MAX_STEP_MM` 生成共线兜底点；中间兜底点以非阻塞 MoveL 进入控制器
+平滑队列，不逐段等待机械臂停稳，最后一点仍按新状态、实际目标位姿和连续稳定帧
+严格等待到位。兜底流程受 `ROS2_SEGMENT_MAX_STEPS` 和
+`ROS2_SEGMENT_TIMEOUT_S` 限制。
 
 ### MoveIt IK 兜底
 
@@ -392,6 +397,9 @@ offset += delta_mm
 4. 回悬空位并确认卸力。
 5. 按 `FT_DIAN_JIN_REPEAT_COUNT` 重复执行，默认每个点 3 次。
 
+`FT_DIAN_JIN_MODE` 默认为 `dian`，因此上述步骤是真正的点按动作。旧的
+`small_fen` 替代模式仍可显式启用，但不再作为默认值。
+
 非力控分支使用位置动作：从悬空位移动到 `hover - DIAN_JIN_DEPTH_MM` 再返回。
 
 ### 分筋
@@ -415,6 +423,9 @@ offset += delta_mm
 4. 每个点保压 `LASTTIME_FORCE_SHUN_DWELL_S`。
 5. 失败点按 `FT_CONTINUE_ON_POINT_ERROR` 决定跳过或终止。
 6. 结束后回到最后悬空位。
+
+按摩主流程只会把已经完成点筋和独立分筋的点加入顺筋候选。若没有任何点完成
+独立分筋，流程会停止并返回失败，不再用原始轨迹绕过分筋直接执行顺筋。
 
 非力控分支只沿各点悬空位移动。
 

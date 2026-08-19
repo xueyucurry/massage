@@ -26,6 +26,7 @@ THIGH_INNER_MASSAGE_FORCE_N = "30.0"   # 大腿内侧
 # ===== 用户常改：动作次数和速度 =====
 DIAN_JIN_REPEAT_DEFAULT = "3"           # 每个按摩点执行点筋次数
 FEN_JIN_REPEAT_DEFAULT = "3"            # 每个按摩点执行分筋次数
+DIAN_JIN_MODE_DEFAULT = "dian"           # 默认执行真正点筋；small_fen 仅作显式兼容模式
 ROBOT_MOTION_SPEED_SCALE_DEFAULT = "2.0"  # 所有机械臂运动速度倍率
 SHUN_JIN_MOTION_SPEED_SCALE_DEFAULT = "1.0" # 顺筋动作速度倍率，1.0 为原速
 
@@ -312,7 +313,7 @@ BACK_LINE_OFFSET_Y_PX = float(
 FORCE_FEN_LATERAL_MM = float(
     os.environ.get("LASTTIME_FORCE_FEN_LATERAL_MM", str(min(abs(FEN_JIN_LATERAL_MM), 12.0)))
 )
-DIAN_JIN_MODE = os.environ.get("FT_DIAN_JIN_MODE", "small_fen").strip().lower()
+DIAN_JIN_MODE = os.environ.get("FT_DIAN_JIN_MODE", DIAN_JIN_MODE_DEFAULT).strip().lower()
 DIAN_AS_SMALL_FEN_LATERAL_MM = float(
     os.environ.get(
         "FT_DIAN_AS_SMALL_FEN_LATERAL_MM",
@@ -704,6 +705,32 @@ def _subdivide_shun_edge(previous_frame, current_frame, max_step_mm):
         _interpolate_shun_frame(previous_frame, current_frame, step_index / step_count)
         for step_index in range(1, step_count + 1)
     ]
+
+
+def _linear_transit_waypoints(start_pose, target_pose, max_step_mm):
+    """Build collinear waypoints whose intermediate poses can be queued with blending."""
+    start = [float(value) for value in start_pose]
+    target = [float(value) for value in target_pose]
+    distance_mm = math.sqrt(
+        sum((target[i] - start[i]) ** 2 for i in range(3))
+    )
+    step_mm = max(1.0, float(max_step_mm))
+    step_count = max(1, int(math.ceil(distance_mm / step_mm)))
+    waypoints = []
+    for step_index in range(1, step_count + 1):
+        fraction = step_index / step_count
+        if step_index == step_count:
+            waypoints.append(target)
+            continue
+        waypoints.append(
+            [
+                start[i] + (target[i] - start[i]) * fraction
+                if i < 3
+                else _interpolate_angle_deg(start[i], target[i], fraction)
+                for i in range(6)
+            ]
+        )
+    return waypoints
 
 
 TRANSIT_MOVE_VEL_FAST = _scaled_transit_velocity(MOVE_VEL_FAST)
@@ -1584,6 +1611,7 @@ class Ros2RobotProxy:
         ovl=ROS2_MOVE_OVL,
         blendT=BLEND_BLOCKING,
         config=-1,
+        timeout_sec=ROS2_MOTION_DONE_WAIT_S,
     ):
         self.spin_once(ROS2_MOTION_STATE_POLL_S)
         start_pose = self.get_actual_tcp_pose()
@@ -1608,6 +1636,7 @@ class Ros2RobotProxy:
         if ret == 0 and float(blendT) < 0:
             state_sequence_after_call = self._state_sequence
             if not self.wait_motion_done(
+                timeout_sec=timeout_sec,
                 target_pose=desc_pos,
                 after_state_sequence=state_sequence_after_call,
                 pose_tolerance_mm=position_tolerance_mm,
@@ -3179,45 +3208,88 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
     def _move_pose_segmented(self, pose, context, vel=TRANSIT_MOVE_VEL_FAST, max_step_mm=ROS2_SEGMENT_MAX_STEP_MM):
         target = [float(v) for v in pose]
-        step = 0
+        start_pose = self.robot.get_actual_tcp_pose()
+        waypoints = _linear_transit_waypoints(start_pose, target, max_step_mm)
         start_time = time.time()
-        while True:
-            if ROS2_SEGMENT_MAX_STEPS > 0 and step >= ROS2_SEGMENT_MAX_STEPS:
-                print(f"{context}: 分段移动超过最大步数 {ROS2_SEGMENT_MAX_STEPS}")
-                return False
+
+        # Prefer one native MoveL for the whole straight leg.  FAIRINO performs
+        # its own continuous trajectory planning for that command, so there are
+        # no artificial 50 mm boundaries at which Python can make it stop.  The
+        # old segmented path remains a reachability/error fallback.
+        if len(waypoints) > 1:
+            direct_timeout_s = (
+                ROS2_SEGMENT_TIMEOUT_S
+                if ROS2_SEGMENT_TIMEOUT_S > 0.0
+                else ROS2_MOTION_DONE_WAIT_S
+            )
+            print(
+                f"{context}: 长距离直达 MoveL "
+                f"({len(waypoints)} 个旧分段合并为一次连续运动)"
+            )
+            ret = self.robot.MoveCart(
+                desc_pos=target,
+                tool=ROS2_TOOL,
+                user=ROS2_USER,
+                vel=vel,
+                blendT=BLEND_BLOCKING,
+                timeout_sec=direct_timeout_s,
+            )
+            if ret == 0:
+                return True
+            close, pos_dist, ori_dist = self._current_pose_close_to(target)
+            if close:
+                print(
+                    f"{context}: 长距离直达返回 err={ret}，但已到目标，按成功处理 "
+                    f"(pos={pos_dist:.2f}mm, ori={ori_dist:.2f}deg)"
+                )
+                return True
+            print(f"{context}: 长距离直达失败 (err={ret})，停止后改用连续分段兜底")
+            self._recover_robot_ready(f"{context} 长距离直达")
+            start_pose = self.robot.get_actual_tcp_pose()
+            waypoints = _linear_transit_waypoints(start_pose, target, max_step_mm)
+
+        if ROS2_SEGMENT_MAX_STEPS > 0 and len(waypoints) > ROS2_SEGMENT_MAX_STEPS:
+            print(
+                f"{context}: 分段移动需要 {len(waypoints)} 步，"
+                f"超过最大步数 {ROS2_SEGMENT_MAX_STEPS}"
+            )
+            return False
+
+        if len(waypoints) > 1:
+            print(
+                f"{context}: 连续分段移动 {len(waypoints)} 段，"
+                "中间点平滑衔接、仅最终点等待到位"
+            )
+
+        for step, waypoint in enumerate(waypoints, start=1):
             if ROS2_SEGMENT_TIMEOUT_S > 0 and time.time() - start_time > ROS2_SEGMENT_TIMEOUT_S:
                 print(f"{context}: 分段移动超过超时时间 {ROS2_SEGMENT_TIMEOUT_S:.1f}s")
                 return False
 
-            step += 1
-            current = self.robot.get_actual_tcp_pose()
-            dx = target[0] - current[0]
-            dy = target[1] - current[1]
-            dz = target[2] - current[2]
-            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-            if dist <= max(1.0, float(max_step_mm)):
-                waypoint = target
+            is_final = step == len(waypoints)
+            # Intermediate collinear waypoints are intentionally non-blocking.
+            # The controller's MoveL blend queue then keeps its velocity instead
+            # of decelerating to zero every ROS service round trip.  The final
+            # point remains strictly blocking and uses the normal fresh-state +
+            # actual-pose completion check.
+            blend_t = BLEND_BLOCKING if is_final else 0.0
+            if is_final and ROS2_SEGMENT_TIMEOUT_S > 0.0:
+                motion_timeout_s = max(
+                    1.0,
+                    ROS2_SEGMENT_TIMEOUT_S - (time.time() - start_time),
+                )
             else:
-                scale = float(max_step_mm) / max(dist, 1e-6)
-                waypoint = [
-                    current[0] + dx * scale,
-                    current[1] + dy * scale,
-                    current[2] + dz * scale,
-                    target[3],
-                    target[4],
-                    target[5],
-                ]
+                motion_timeout_s = ROS2_MOTION_DONE_WAIT_S
 
             ret = self.robot.MoveCart(
                 desc_pos=waypoint,
                 tool=ROS2_TOOL,
                 user=ROS2_USER,
                 vel=vel,
-                blendT=BLEND_BLOCKING,
+                blendT=blend_t,
+                timeout_sec=motion_timeout_s,
             )
             if ret == 0:
-                if waypoint is target:
-                    return True
                 continue
 
             if ret == 14:
@@ -3227,20 +3299,18 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     tool=ROS2_TOOL,
                     user=ROS2_USER,
                     vel=vel,
-                    blendT=BLEND_BLOCKING,
+                    blendT=blend_t,
+                    timeout_sec=motion_timeout_s,
                 )
                 if ret == 0:
-                    if waypoint is target:
-                        return True
                     continue
 
             if self._moveit_movej_to_pose(waypoint, f"{context} 分段{step}", vel=vel):
-                if waypoint is target:
-                    return True
                 continue
 
             print(f"{context}: 分段移动失败 step={step}, err={ret}, target={self._fmt_pose(waypoint)}")
             return False
+        return True
 
     def _move_cart_checked(self, pose, context, vel=TRANSIT_MOVE_VEL_FAST, required=True):
         print(f"{context}: target={self._fmt_pose(pose)}")
@@ -4581,7 +4651,10 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 return False
 
             point_action_text = "点筋小幅分筋" if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"} else "点筋"
-            print(f"\n执行{point_action_text}+分筋动作...")
+            print(
+                f"\n执行点位动作（严格顺序：{point_action_text} → 独立分筋；"
+                "完成后才允许进入顺筋）..."
+            )
             point_failures = []
             shun_candidate_frames = []
             for i, frame in enumerate(self.massage_frames):
@@ -4595,31 +4668,42 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     if not FT_CONTINUE_ON_POINT_ERROR:
                         return False
                     continue
-                shun_candidate_frames.append(frame)
 
-                print(f"  {point_action_text}...")
+                print(f"  [点{point_no}] 开始{point_action_text}...")
                 if not self.execute_dian_jin(frame):
                     point_failures.append((point_no, point_action_text))
-                    print(f"    警告：点{point_no}{point_action_text}失败，跳过该点后续分筋")
+                    print(
+                        f"    警告：点{point_no}{point_action_text}失败；"
+                        "为保证动作顺序，本点不进入分筋和顺筋"
+                    )
                     if not FT_CONTINUE_ON_POINT_ERROR:
                         return False
                     continue
 
-                print("  分筋...")
+                print(f"  [点{point_no}] {point_action_text}完成，开始独立分筋...")
                 if not self.execute_fen_jin(frame):
                     point_failures.append((point_no, "分筋"))
-                    print(f"    警告：点{point_no}分筋失败，继续下一个点")
+                    print(
+                        f"    警告：点{point_no}分筋失败；"
+                        "为保证动作顺序，本点不进入顺筋"
+                    )
                     if not FT_CONTINUE_ON_POINT_ERROR:
                         return False
                     continue
+                print(f"  [点{point_no}] 独立分筋完成，可进入顺筋")
+                shun_candidate_frames.append(frame)
 
             if point_failures:
                 summary = ", ".join(f"点{point}:{stage}" for point, stage in point_failures)
                 print(f"\n[容错] {point_action_text}/分筋阶段跳过: {summary}")
 
-            shun_frames = shun_candidate_frames or list(self.massage_frames)
             if not shun_candidate_frames:
-                print(f"[容错] 没有{point_action_text}/分筋阶段确认可达的悬空点，顺筋将尝试原始轨迹")
+                print(
+                    f"错误：没有任何点完整执行{point_action_text}和独立分筋；"
+                    "禁止跳过分筋直接执行顺筋"
+                )
+                return False
+            shun_frames = shun_candidate_frames
 
             self.set_force_target_n(
                 _force_target_for_massage_action(self.massage_target, "shun_jin"),
@@ -4704,6 +4788,7 @@ def main():
     print(f"  点筋次数: {DIAN_JIN_REPEAT_COUNT}次/点")
     print(f"  分筋偏移: {FEN_JIN_LATERAL_MM}mm")
     print(f"  分筋次数: {FEN_JIN_REPEAT_COUNT}轮/点")
+    print("  动作顺序: 点筋 → 独立分筋 → 顺筋（分筋未完成的点禁止进入顺筋）")
     print(f"  采样点数: {SAMPLE_POINTS}")
     print(f"  ROS2工作空间: {ROS2_WORKSPACE}")
     print(f"  ROS2控制服务: {ROS2_SERVICE_NAME}")
@@ -4745,6 +4830,10 @@ def main():
         f"slow={TRANSIT_MOVE_VEL_SLOW:.1f}(base={MOVE_VEL_SLOW}); "
         f"机械臂命令速度倍率={ROBOT_MOTION_SPEED_SCALE:.1f} "
         f"顺筋速度倍率={SHUN_JIN_MOTION_SPEED_SCALE:.1f}"
+    )
+    print(
+        "  长距离转场: 单次原生 MoveL 连续直达；"
+        f"失败时按≤{ROS2_SEGMENT_MAX_STEP_MM:.1f}mm 共线段平滑兜底"
     )
     print(
         f"  单点失败容错: {'开启' if FT_CONTINUE_ON_POINT_ERROR else '关闭'} "

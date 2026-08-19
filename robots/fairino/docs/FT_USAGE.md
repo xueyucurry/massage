@@ -354,7 +354,7 @@ JSON 主要字段：
 | `FT_SERVO_MAX_ORIENTATION_DEG` | `15.0` | 使用插值的最大单轴姿态变化；更大的姿态变化保持原 `MoveCart` |
 | `FT_SERVO_LINEAR_SPEED_MM_S_AT_100` | `1000.0` | 将原速度百分比换算为插值时长所用的 100% 线速度基准 |
 | `FT_SERVO_ANGULAR_SPEED_DEG_S_AT_100` | `180.0` | 将原速度百分比换算为插值时长所用的 100% 角速度基准 |
-| `ROS2_SEGMENT_MAX_STEP_MM` | `50.0` | 分段转场最大步长 |
+| `ROS2_SEGMENT_MAX_STEP_MM` | `50.0` | 长距离原生 MoveL 失败后的兜底步长；共线中间段平滑衔接，只在最终目标等待到位 |
 | `ROS2_SEGMENT_TIMEOUT_S` | `180.0` | 分段转场总超时 |
 | `ROS2_MOTION_DONE_STABLE_SAMPLES` | `2` | 到位需连续满足“新状态、实际位姿、完成标志”的反馈帧数 |
 | `ROS2_MOTION_DONE_TOL_FRACTION` | `0.25` | 短步进到位容差不超过本次位移的比例，防止小步被旧位置误判为已到位 |
@@ -418,7 +418,7 @@ JSON 主要字段：
 | `FT_LIVE_FORCE_TARGET_MIN_N` | `1.0` | 运行中语音调整目标力的下限 |
 | `FT_LIVE_FORCE_TARGET_MAX_N` | `80.0` | 运行中语音调整目标力的上限 |
 | `FT_DIAN_JIN_REPEAT_COUNT` | `3` | 每个按摩点的点筋重复次数 |
-| `FT_DIAN_JIN_MODE` | `small_fen` | 点筋动作模式；`small_fen` 表示用小幅分筋替代原点按 |
+| `FT_DIAN_JIN_MODE` | `dian` | 点筋动作模式；默认执行真正点筋，只有显式设为 `small_fen` 才用小幅分筋替代原点按 |
 | `FT_DIAN_AS_SMALL_FEN_LATERAL_MM` | `min(分筋力控偏移*0.5, 6)` | 点筋替代小幅分筋的横向偏移 |
 | `FT_FEN_JIN_REPEAT_COUNT` | `3` | 每个按摩点的分筋重复轮数 |
 | `LASTTIME_FORCE_GUARD` | `0` | 是否启用 FAIRINO `FT_Guard` 碰撞守护 |
