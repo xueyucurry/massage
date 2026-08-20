@@ -8,6 +8,7 @@ from .tools import (
     get_status,
     pause_massage,
     resume_massage,
+    set_pending_force,
     start_massage,
     start_shun_jin,
     stop_massage,
@@ -56,6 +57,7 @@ class FairinoMassageToolsManager:
                 (
                     "self.fairino_massage.start",
                     "【FAIRINO开始按摩】用户说“开始按摩、开始全套按摩、开始点筋、开始分筋”时必须调用本工具。"
+                    "如果用户本轮同时明确同意沿用记忆中的力度偏好，必须先调用 self.fairino_massage.set_pending_force，确认其 success=true 后再调用本工具；不得跳过力度预设直接开始。"
                     "如果用户明确说“开始顺筋、只做顺筋、只执行顺筋、顺筋测试、检查顺筋效果”，必须优先调用 self.fairino_massage.shunjin，不要用 all。"
                     "不要只用自然语言回复进度；只有工具返回后才能告诉用户是否已启动。"
                     "功能：使用当前已检测保存的轨迹，后台执行点筋/分筋/顺筋。"
@@ -75,6 +77,7 @@ class FairinoMassageToolsManager:
                 (
                     "self.fairino_massage.shunjin",
                     "【FAIRINO只执行顺筋】用户说“开始顺筋、只做顺筋、只执行顺筋、单独顺筋、顺筋测试、检查顺筋、检查顺筋效果、测试顺筋贴合”时必须调用本工具。"
+                    "如果用户本轮同时明确同意沿用记忆中的顺筋力度，必须先调用 self.fairino_massage.set_pending_force（actions=shun_jin），确认 success=true 后再调用本工具。"
                     "功能：使用当前已检测保存的轨迹，只执行 shun_jin 顺筋动作，不执行点筋和分筋，方便检查顺筋末端是否贴合人体。"
                     "无 trajectory_path 时使用当前会话轨迹；如果没有已保存轨迹，工具会返回失败并提示先检测。",
                     shun_props,
@@ -93,7 +96,7 @@ class FairinoMassageToolsManager:
             adjust_force_props = PropertyList(
                 [
                     Property("direction", PropertyType.STRING, default_value="stronger"),
-                    Property("delta_n", PropertyType.INTEGER, default_value=0),
+                    Property("delta_n", PropertyType.NUMBER, default_value=0),
                 ]
             )
             add_tool(
@@ -106,6 +109,30 @@ class FairinoMassageToolsManager:
                     "不要因为 delta_n 是正数就理解为增大；不要把减轻/降低/小力传成 stronger。用户只说大力/小力且没说数值时不要填 delta_n，默认每次调整 5N。",
                     adjust_force_props,
                     adjust_force,
+                )
+            )
+
+            pending_force_props = PropertyList(
+                [
+                    Property("direction", PropertyType.STRING, default_value=""),
+                    Property("delta_n", PropertyType.NUMBER, default_value=0),
+                    Property("target_force_n", PropertyType.NUMBER, default_value=0),
+                    Property("target", PropertyType.STRING, default_value="auto"),
+                    Property("actions", PropertyType.STRING, default_value="all"),
+                ]
+            )
+            add_tool(
+                (
+                    "self.fairino_massage.set_pending_force",
+                    "【FAIRINO按摩开始前预设力度】仅用于按摩尚未开始时，设置下一次按摩实际使用的目标力度。"
+                    "当记忆召回用户上次的力度偏好时，必须先询问本次是否沿用；只有用户在本轮明确同意后才调用本工具，未确认、拒绝或含糊回答时严禁调用。"
+                    "如果记忆里有具体力度（例如1.5N），传 target_force_n=1.5；如果只有偏轻/偏重，分别传 direction=softer/stronger，可用 delta_n 指定变化量，未填时默认变化5N。"
+                    "target 可取 back/leg/leg_inner，actions 可取 all 或 dian_jin,fen_jin,shun_jin 的逗号组合；应与用户已确认偏好的部位和手法一致。"
+                    "工具 success=true 后会返回新的 force_target_n，GUI目标力度立即更新，下一次匹配的 start 会读取并消费该一次性预设。"
+                    "成功后回复用户时必须复述返回的具体 force_target_n 和对应部位/手法，使后续记忆保存具体牛顿值而不是只保存“偏轻/偏重”。"
+                    "不得用自然语言确认代替工具调用；也不得在 success=false 时声称力度已生效。除非用户同时要求开始，否则设置预设后不要擅自调用 start。",
+                    pending_force_props,
+                    set_pending_force,
                 )
             )
 

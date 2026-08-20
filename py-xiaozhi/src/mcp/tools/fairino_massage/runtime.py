@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import signal
 import subprocess
@@ -27,7 +28,32 @@ EXECUTE_RUNNER = FAIRINO_DIR / "run_ft_agent_process_ros2.sh"
 MASSAGE_CLI = PROJECT_ROOT / "massage"
 MASSAGE_ACTION_SEQUENCE = ("dian_jin", "fen_jin", "shun_jin")
 FORCE_ADJUST_STEP_N = float(os.environ.get("FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N", "5.0"))
+BACK_FORCE_TARGET_N = float(os.environ.get("LASTTIME_FORCE_N", "10.0"))
 BACK_SHUN_JIN_FORCE_N = float(os.environ.get("BACK_SHUN_JIN_FORCE_N", "2.0"))
+THIGH_OUTER_FORCE_TARGET_N = float(
+    os.environ.get(
+        "THIGH_OUTER_FORCE_N",
+        os.environ.get(
+            "LASTTIME_THIGH_OUTER_FORCE_N",
+            os.environ.get(
+                "THIGH_FORCE_N",
+                os.environ.get("LASTTIME_THIGH_FORCE_N", "50.0"),
+            ),
+        ),
+    )
+)
+THIGH_INNER_FORCE_TARGET_N = float(
+    os.environ.get(
+        "THIGH_INNER_FORCE_N",
+        os.environ.get(
+            "LASTTIME_THIGH_INNER_FORCE_N",
+            os.environ.get(
+                "THIGH_FORCE_N",
+                os.environ.get("LASTTIME_THIGH_FORCE_N", "30.0"),
+            ),
+        ),
+    )
+)
 LIVE_FORCE_TARGET_MIN_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MIN_N", "1.0"))
 LIVE_FORCE_TARGET_MAX_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MAX_N", "80.0"))
 FORCE_INCREASE_DIRECTIONS = {
@@ -257,6 +283,51 @@ def _clamp_force_target_n(value: float) -> float:
     return max(low, min(high, float(value)))
 
 
+def _force_target_limits() -> tuple:
+    return (
+        min(float(LIVE_FORCE_TARGET_MIN_N), float(LIVE_FORCE_TARGET_MAX_N)),
+        max(float(LIVE_FORCE_TARGET_MIN_N), float(LIVE_FORCE_TARGET_MAX_N)),
+    )
+
+
+def _default_force_target_n(
+    state: Dict[str, Any],
+    target: str,
+    actions: List[str],
+) -> float:
+    if target == "back" and actions == ["shun_jin"]:
+        return float(BACK_SHUN_JIN_FORCE_N)
+
+    state_target = _normalize_target(state.get("target") or "")
+    state_default = state.get("default_force_target_n")
+    if state_target == target and state_default not in (None, ""):
+        try:
+            return float(state_default)
+        except (TypeError, ValueError):
+            pass
+
+    if target == "leg":
+        return float(THIGH_OUTER_FORCE_TARGET_N)
+    if target == "leg_inner":
+        return float(THIGH_INNER_FORCE_TARGET_N)
+    return float(BACK_FORCE_TARGET_N)
+
+
+def _pending_force_matches(
+    preset: Any,
+    target: str,
+    actions: List[str],
+) -> bool:
+    if not isinstance(preset, dict) or preset.get("force_target_n") in (None, ""):
+        return False
+    preset_target = _normalize_target(preset.get("target") or "")
+    try:
+        preset_actions = _normalize_massage_actions(preset.get("actions") or "all")
+    except (TypeError, ValueError):
+        return False
+    return preset_target == target and preset_actions == list(actions)
+
+
 def _force_target_from_state(state: Dict[str, Any]) -> Optional[float]:
     last_result = state.get("last_result")
     candidates: List[Any] = [
@@ -298,9 +369,10 @@ def _force_target_for_start(
     current_force = _force_target_from_state(state)
     if resume:
         return current_force
-    if target == "back" and actions == ["shun_jin"]:
-        return float(BACK_SHUN_JIN_FORCE_N)
-    return current_force
+    preset = state.get("pending_force_preset")
+    if _pending_force_matches(preset, target, actions):
+        return float(preset["force_target_n"])
+    return _default_force_target_n(state, target, actions)
 
 
 def _infer_massage_target_from_trajectory(path: str) -> str:
@@ -460,7 +532,11 @@ def _empty_state() -> Dict[str, Any]:
         "resume_step_index": 0,
         "robot_tcp_pose": None,
         "robot_joints_deg": None,
+        "default_force_target_n": None,
         "force_target_n": None,
+        "pending_force_preset": None,
+        "last_pending_force_preset": None,
+        "session_force_override_active": False,
         "last_force_adjustment": None,
         "last_force_adjust_seq": None,
         "pending_force_adjustment": None,
@@ -666,11 +742,17 @@ class FairinoMassageRuntime:
                 }
             self._cleanup_detect_display_process_unlocked()
             session_id = _new_session_id()
+            pending_force_preset = self._state.get("pending_force_preset")
+            pending_force_target_n = None
+            if isinstance(pending_force_preset, dict):
+                pending_force_target_n = pending_force_preset.get("force_target_n")
             self._state.update(
                 _empty_state(),
                 session_id=session_id,
                 status="detecting",
                 target=normalized_target,
+                force_target_n=pending_force_target_n,
+                pending_force_preset=pending_force_preset,
                 message="正在检测经络并生成轨迹",
             )
             self._save_state_unlocked()
@@ -805,14 +887,31 @@ class FairinoMassageRuntime:
             result = _jsonable(result)
             if result.get("ok"):
                 trajectory = result.get("trajectory") or {}
+                detected_target = result.get("target") or target
+                default_force_target_n = trajectory.get("force_target_n")
+                pending_force_preset = self._state.get("pending_force_preset")
+                pending_target = None
+                if isinstance(pending_force_preset, dict):
+                    pending_target = _normalize_target(
+                        pending_force_preset.get("target") or ""
+                    )
+                if pending_target == _normalize_target(detected_target):
+                    displayed_force_target_n = pending_force_preset.get(
+                        "force_target_n"
+                    )
+                else:
+                    displayed_force_target_n = default_force_target_n
+                    pending_force_preset = None
                 state = self._update_state(
                     session_id=session_id,
                     status="detected",
-                    target=result.get("target"),
+                    target=detected_target,
                     target_label=result.get("target_label"),
                     trajectory_path=trajectory.get("trajectory_path"),
                     point_count=trajectory.get("point_count") or 0,
-                    force_target_n=trajectory.get("force_target_n"),
+                    default_force_target_n=default_force_target_n,
+                    force_target_n=displayed_force_target_n,
+                    pending_force_preset=pending_force_preset,
                     actions=[],
                     stage=None,
                     current_action=None,
@@ -876,6 +975,154 @@ class FairinoMassageRuntime:
 
     async def resume(self) -> Dict[str, Any]:
         return self._start_worker(actions="", target="auto", trajectory_path="", resume=True)
+
+    async def set_pending_force(
+        self,
+        direction: str = "",
+        delta_n: Optional[float] = None,
+        target_force_n: Optional[float] = None,
+        target: str = "auto",
+        actions: str = "all",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            self._refresh_state_from_disk_unlocked()
+            worker_alive = self._is_worker_alive_unlocked()
+            status = str(self._state.get("status") or "idle").strip().lower()
+
+            if worker_alive or status in {"detecting", "running", "pausing", "stopping"}:
+                return {
+                    "success": False,
+                    "message": "当前检测或按摩任务仍在运行，不能预设下一次按摩力度",
+                    "state": self._state_copy_unlocked(),
+                }
+            if status == "paused":
+                return {
+                    "success": False,
+                    "message": "当前按摩已暂停，请使用 adjust_force 调整本次会话力度",
+                    "state": self._state_copy_unlocked(),
+                }
+
+            target_text = str(target or "").strip().lower()
+            if target_text in {"", "auto", "current", "当前"}:
+                normalized_target = _normalize_target(self._state.get("target") or "") or "back"
+            else:
+                normalized_target = _normalize_target(target_text)
+                if normalized_target is None:
+                    return {
+                        "success": False,
+                        "message": "target 必须是 back、leg 或 leg_inner",
+                        "state": self._state_copy_unlocked(),
+                    }
+
+            try:
+                normalized_actions = _normalize_massage_actions(actions or "all")
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "message": str(exc),
+                    "state": self._state_copy_unlocked(),
+                }
+
+            baseline_force = _default_force_target_n(
+                self._state,
+                normalized_target,
+                normalized_actions,
+            )
+            low, high = _force_target_limits()
+            requested_force = None
+            normalized_direction = ""
+
+            if target_force_n not in (None, ""):
+                try:
+                    requested_force = float(target_force_n)
+                except (TypeError, ValueError):
+                    requested_force = None
+                if requested_force is None or not math.isfinite(requested_force):
+                    return {
+                        "success": False,
+                        "message": "target_force_n 必须是有限数值",
+                        "state": self._state_copy_unlocked(),
+                    }
+                if requested_force < low or requested_force > high:
+                    return {
+                        "success": False,
+                        "message": f"目标力度必须在 {low:g}N 到 {high:g}N 之间",
+                        "state": self._state_copy_unlocked(),
+                    }
+                if requested_force < baseline_force:
+                    normalized_direction = "softer"
+                elif requested_force > baseline_force:
+                    normalized_direction = "stronger"
+                else:
+                    normalized_direction = "unchanged"
+            else:
+                if not str(direction or "").strip():
+                    return {
+                        "success": False,
+                        "message": (
+                            "未提供具体 target_force_n 时，direction 必须是 "
+                            "softer 或 stronger"
+                        ),
+                        "state": self._state_copy_unlocked(),
+                    }
+                try:
+                    delta = _normalize_force_delta(direction, delta_n)
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "message": str(exc),
+                        "state": self._state_copy_unlocked(),
+                    }
+                if not math.isfinite(delta):
+                    return {
+                        "success": False,
+                        "message": "delta_n 必须是有限数值",
+                        "state": self._state_copy_unlocked(),
+                    }
+                requested_force = _clamp_force_target_n(baseline_force + delta)
+                normalized_direction = "stronger" if delta > 0 else "softer" if delta < 0 else "unchanged"
+
+            selected_force = float(requested_force)
+            applied_delta = selected_force - float(baseline_force)
+            preset = {
+                "force_target_n": selected_force,
+                "default_force_target_n": float(baseline_force),
+                "direction": normalized_direction,
+                "delta_n": float(applied_delta),
+                "target": normalized_target,
+                "actions": list(normalized_actions),
+                "source": "小智确认后的按摩力度预设",
+                "confirmed_at": _now_text(),
+            }
+            message = (
+                f"已预设下一次按摩目标力度为 {selected_force:g}N，"
+                "开始按摩时将使用该力度"
+            )
+            self._state.update(
+                force_target_n=selected_force,
+                pending_force_preset=preset,
+                message=message,
+            )
+            self._save_state_unlocked()
+            logger.info(
+                "[FairinoMassage] 下一次力度预设成功: target=%s actions=%s "
+                "direction=%s force_target_n=%.3f",
+                normalized_target,
+                ",".join(normalized_actions),
+                normalized_direction,
+                selected_force,
+            )
+            return {
+                "success": True,
+                "message": message,
+                "pending": True,
+                "direction": normalized_direction,
+                "delta_n": float(applied_delta),
+                "force_target_n": selected_force,
+                "target": normalized_target,
+                "actions": list(normalized_actions),
+                "state": self._state_copy_unlocked(),
+            }
 
     async def adjust_force(
         self,
@@ -1089,12 +1336,33 @@ class FairinoMassageRuntime:
                 start_step_index = 0
                 session_id = state.get("session_id") or _new_session_id()
 
+            pending_force_preset = state.get("pending_force_preset")
+            pending_force_applied = bool(
+                not resume
+                and _pending_force_matches(
+                    pending_force_preset,
+                    normalized_target,
+                    normalized_actions,
+                )
+            )
+            pending_force_discarded = bool(
+                not resume
+                and isinstance(pending_force_preset, dict)
+                and not pending_force_applied
+            )
             selected_force_target_n = _force_target_for_start(
                 state,
                 normalized_target,
                 normalized_actions,
                 resume,
             )
+            last_pending_force_preset = state.get("last_pending_force_preset")
+            if not resume and isinstance(pending_force_preset, dict):
+                last_pending_force_preset = dict(pending_force_preset)
+                last_pending_force_preset.update(
+                    status="applied" if pending_force_applied else "discarded",
+                    handled_at=_now_text(),
+                )
             shun_only = (
                 not resume
                 and normalized_target == "back"
@@ -1108,8 +1376,20 @@ class FairinoMassageRuntime:
                     f"顺筋按摩任务已启动，目标力度为 {selected_force_target_n:g} 牛"
                 )
             else:
-                state_message = "正在启动按摩动作"
-                result_message = "按摩任务已继续" if resume else "按摩任务已启动"
+                state_message = (
+                    f"正在启动按摩动作，目标力度 {selected_force_target_n:g}N"
+                    if selected_force_target_n is not None
+                    else "正在启动按摩动作"
+                )
+                if resume:
+                    result_message = "按摩任务已继续"
+                elif pending_force_applied:
+                    result_message = (
+                        f"按摩任务已启动，已使用确认的预设力度 "
+                        f"{selected_force_target_n:g} 牛"
+                    )
+                else:
+                    result_message = "按摩任务已启动"
 
             self._write_control_unlocked("continue")
             self._state.update(
@@ -1119,6 +1399,15 @@ class FairinoMassageRuntime:
                 trajectory_path=str(path),
                 actions=normalized_actions,
                 force_target_n=selected_force_target_n,
+                pending_force_preset=(
+                    pending_force_preset if resume else None
+                ),
+                last_pending_force_preset=last_pending_force_preset,
+                session_force_override_active=(
+                    bool(state.get("session_force_override_active"))
+                    if resume
+                    else pending_force_applied
+                ),
                 stage=start_stage,
                 current_action="start",
                 current_point_index=start_point_index,
@@ -1141,6 +1430,11 @@ class FairinoMassageRuntime:
                     str(path),
                     list(normalized_actions),
                     selected_force_target_n,
+                    (
+                        bool(state.get("session_force_override_active"))
+                        if resume
+                        else pending_force_applied
+                    ),
                     start_stage,
                     start_point_index,
                     start_action,
@@ -1154,6 +1448,9 @@ class FairinoMassageRuntime:
             return {
                 "success": True,
                 "message": result_message,
+                "force_target_n": selected_force_target_n,
+                "pending_force_applied": pending_force_applied,
+                "pending_force_discarded": pending_force_discarded,
                 "state": self._state_copy_unlocked(),
             }
 
@@ -1164,6 +1461,7 @@ class FairinoMassageRuntime:
         trajectory_path: str,
         actions: List[str],
         force_target_n: Optional[float],
+        force_target_override: bool,
         start_stage: str,
         start_point_index: int,
         start_action: str,
@@ -1207,6 +1505,8 @@ class FairinoMassageRuntime:
             ]
             if force_target_n not in (None, ""):
                 cmd.extend(["--force-target-n", str(float(force_target_n))])
+            if force_target_override:
+                cmd.append("--force-target-override")
             env = os.environ.copy()
             env.setdefault("PYTHONUNBUFFERED", "1")
 

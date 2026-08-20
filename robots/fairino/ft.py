@@ -280,6 +280,39 @@ FORCE_CONTACT_OFFSET_MM = float(
 )
 TOOL_TIP_LENGTH_MM = float(os.environ.get("LASTTIME_TOOL_TIP_LENGTH_MM", "95.0"))
 BACK_HOVER_HEIGHT_MM = float(os.environ.get("BACK_HOVER_HEIGHT_MM", BACK_HOVER_HEIGHT_DEFAULT_MM))
+BACK_POSTURE_SEED_ENABLE = os.environ.get(
+    "BACK_POSTURE_SEED_ENABLE", "0"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+BACK_POSTURE_SEED_FILE = Path(
+    os.environ.get(
+        "BACK_POSTURE_SEED_FILE",
+        str(SCRIPT_DIR / "back_posture_seed.json"),
+    )
+)
+BACK_POSTURE_CONFIG_TOL_DEG = float(
+    os.environ.get("BACK_POSTURE_CONFIG_TOL_DEG", "2.0")
+)
+BACK_TRAJECTORY_PROBE_ONLY = os.environ.get(
+    "BACK_TRAJECTORY_PROBE_ONLY", "0"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+BACK_TRAJECTORY_PROBE_CLEARANCE_MM = max(
+    float(BACK_HOVER_HEIGHT_MM),
+    float(os.environ.get("BACK_TRAJECTORY_PROBE_CLEARANCE_MM", "60.0")),
+)
+BACK_TRAJECTORY_PROBE_VEL = max(
+    1.0,
+    float(os.environ.get("BACK_TRAJECTORY_PROBE_VEL", "10.0")),
+)
 BACK_MIN_DEPTH_RATIO = float(os.environ.get("BACK_MIN_DEPTH_RATIO", "0.50"))
 BACK_MIN_LINE_LENGTH_PX = float(
     os.environ.get("BACK_MIN_LINE_LENGTH_PX", "220.0")
@@ -602,6 +635,52 @@ THIGH_AUTO_REACHABLE_ORIENTATION = os.environ.get(
 }
 THIGH_REACHABILITY_STEP_DEG = float(os.environ.get("THIGH_REACHABILITY_STEP_DEG", "5.0"))
 THIGH_REACHABILITY_MIN_TILT_DEG = float(os.environ.get("THIGH_REACHABILITY_MIN_TILT_DEG", "0.0"))
+THIGH_INNER_POSTURE_SEED_FILE = Path(
+    os.environ.get(
+        "THIGH_INNER_POSTURE_SEED_FILE",
+        str(SCRIPT_DIR / "thigh_inner_posture_seed.json"),
+    )
+)
+THIGH_INNER_POSTURE_SEED_ENABLE = os.environ.get(
+    "THIGH_INNER_POSTURE_SEED_ENABLE", "1"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+THIGH_INNER_USE_SEED_ORIENTATION = os.environ.get(
+    "THIGH_INNER_USE_SEED_ORIENTATION", "1"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+THIGH_INNER_POSTURE_SWITCH_VEL = float(
+    os.environ.get("THIGH_INNER_POSTURE_SWITCH_VEL", "10.0")
+)
+THIGH_INNER_POSTURE_JOINT_TOL_DEG = float(
+    os.environ.get("THIGH_INNER_POSTURE_JOINT_TOL_DEG", "2.0")
+)
+THIGH_INNER_POSTURE_NEAR_JOINT_FALLBACK_DEG = float(
+    os.environ.get("THIGH_INNER_POSTURE_NEAR_JOINT_FALLBACK_DEG", "20.0")
+)
+THIGH_INNER_POSTURE_LIFT_Z_MM = float(
+    os.environ.get("THIGH_INNER_POSTURE_LIFT_Z_MM", "390.0")
+)
+THIGH_INNER_POSTURE_PROBE_ONLY = os.environ.get(
+    "THIGH_INNER_POSTURE_PROBE_ONLY", "0"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+THIGH_INNER_POSTURE_PROBE_DWELL_S = max(
+    0.0,
+    float(os.environ.get("THIGH_INNER_POSTURE_PROBE_DWELL_S", "5.0")),
+)
 THIGH_OUTER_TAIL_SKIP_POINTS = int(
     os.environ.get("THIGH_OUTER_TAIL_SKIP_POINTS", THIGH_OUTER_TAIL_SKIP_POINTS_DEFAULT)
 )
@@ -846,6 +925,19 @@ def _parse_ret_code(cmd_res):
         return int(float(head))
     except ValueError:
         return -9999
+
+
+def _parse_inverse_kin_joints(cmd_res):
+    parts = [part.strip() for part in str(cmd_res).split(",")]
+    if len(parts) < 7 or _parse_ret_code(cmd_res) != 0:
+        return None
+    try:
+        joints = [float(value) for value in parts[1:7]]
+    except ValueError:
+        return None
+    if not all(math.isfinite(value) for value in joints):
+        return None
+    return joints
 
 
 def _parse_force_approach_response(cmd_res):
@@ -1297,6 +1389,7 @@ class Ros2RobotProxy:
         self._state_sequence = 0
         self._servo_interpolation_available = bool(ROS2_SERVO_INTERPOLATION)
         self._servo_interpolation_warning_reported = False
+        self.default_ik_config = -1
 
     def connect(self):
         if not rclpy.ok():
@@ -1391,6 +1484,25 @@ class Ros2RobotProxy:
     def get_actual_tcp_pose(self):
         self.wait_for_state(ROS2_STATE_WAIT_S, required=True)
         return _state_pose(self.latest_state)
+
+    def get_fresh_actual_tcp_pose(self, timeout_sec=1.0):
+        """Return TCP feedback sampled after this method was called.
+
+        Force-approach commands run inside the control service.  Their response
+        can reach this client before the matching state-topic callback, so the
+        cached ``latest_state`` may still describe the pre-approach hover pose.
+        Never use that stale sample to decide that a safety retract can be
+        skipped.
+        """
+        minimum_sequence = int(self._state_sequence)
+        deadline = time.time() + max(0.05, float(timeout_sec))
+        while time.time() < deadline:
+            self.spin_once(min(0.1, max(0.0, deadline - time.time())))
+            if self.latest_state is not None and self._state_sequence > minimum_sequence:
+                return _state_pose(self.latest_state)
+        raise RuntimeError(
+            f"在 {float(timeout_sec):.1f}s 内未收到新的状态反馈: {ROS2_STATE_TOPIC}"
+        )
 
     def get_actual_joint_positions_deg(self):
         self.wait_for_state(ROS2_STATE_WAIT_S, required=True)
@@ -1566,6 +1678,15 @@ class Ros2RobotProxy:
         ret, cmd_res = self._call(cmd, raise_on_error=False)
         return ret, cmd_res
 
+    def inverse_kin_joints_deg(self, desc_pos, config=-1):
+        ret, cmd_res = self.inverse_kin(desc_pos, config=config)
+        if ret != 0:
+            return ret, None
+        joints = _parse_inverse_kin_joints(cmd_res)
+        if joints is None:
+            return -1002, None
+        return 0, joints
+
     def inverse_kin_ok(self, desc_pos, config=-1):
         ret, _ = self.inverse_kin(desc_pos, config=config)
         return ret == 0
@@ -1619,14 +1740,35 @@ class Ros2RobotProxy:
             start_pose,
             desc_pos,
         )
-        point_cmd = "CARTPoint(1," + ",".join(_fmt_value(v) for v in desc_pos) + ")"
+        effective_config = int(config)
+        if effective_config == -1:
+            effective_config = int(self.default_ik_config)
+
+        point_name = "CART1"
+        if 0 <= effective_config <= 7:
+            ret, joint_pos_deg = self.inverse_kin_joints_deg(
+                desc_pos,
+                config=effective_config,
+            )
+            if ret != 0 or joint_pos_deg is None:
+                print(
+                    f"MoveL 指定 config={effective_config} 逆解失败 "
+                    f"(err={ret}, target={[float(v) for v in desc_pos]})"
+                )
+                return ret
+            point_cmd = "JNTPoint(1," + ",".join(
+                _fmt_value(v) for v in joint_pos_deg
+            ) + ")"
+            point_name = "JNT1"
+        else:
+            point_cmd = "CARTPoint(1," + ",".join(_fmt_value(v) for v in desc_pos) + ")"
         ret, _ = self._call(point_cmd, raise_on_error=False)
         if ret != 0:
             return ret
 
         cmd = "MoveL(" + ",".join(
             [
-                "CART1",
+                point_name,
                 _fmt_value(_scaled_robot_motion_speed(vel)),
                 _fmt_value(int(tool)),
                 _fmt_value(int(user)),
@@ -2194,6 +2336,13 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         self.massage_target = _normalize_massage_target(massage_target) or "back"
         self.camera_to_robot = None
         self.back_line_meta = {}
+        self.back_posture_seed = None
+        self._back_posture_active = False
+        self.inner_posture_seed = None
+        self._inner_posture_active = False
+        self._inner_posture_transitioning = False
+        self._inner_posture_return_joints_deg = None
+        self._inner_previous_motion_orientation = None
         self.force_target_n = float(_force_target_for_massage_target(self.massage_target))
         if _is_thigh_target(self.massage_target):
             self.hover_height_mm = float(THIGH_HOVER_HEIGHT_MM)
@@ -2201,6 +2350,114 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         else:
             self.hover_height_mm = float(BACK_HOVER_HEIGHT_MM)
             self.force_approach_max_offset_mm = float(FORCE_APPROACH_MAX_OFFSET_MM)
+        if self.massage_target == "leg_inner" and THIGH_INNER_POSTURE_SEED_ENABLE:
+            self.inner_posture_seed = self._load_inner_posture_seed()
+        if self.massage_target == "back" and BACK_POSTURE_SEED_ENABLE:
+            self.back_posture_seed = self._load_back_posture_seed()
+
+    def _load_back_posture_seed(self):
+        path = Path(BACK_POSTURE_SEED_FILE)
+        if not path.is_file():
+            raise RuntimeError(f"背部姿态种子不存在: {path}")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"无法读取背部姿态种子 {path}: {exc}") from exc
+
+        orientation = [float(value) for value in payload.get("orientation_rpy", [])]
+        config = int(payload.get("ik_config", -1))
+        if len(orientation) != 3 or not all(math.isfinite(value) for value in orientation):
+            raise RuntimeError(f"背部姿态种子必须包含 3 维有限 orientation_rpy: {path}")
+        if not 0 <= config <= 7:
+            raise RuntimeError(f"背部姿态种子的 ik_config 必须在 0~7: {config}")
+        print(
+            f"[BackPosture] 已加载背部姿态种子: config={config}, "
+            f"orientation={self._fmt_pose(orientation) if hasattr(self, '_fmt_pose') else orientation}, "
+            f"file={path}"
+        )
+        return {
+            "orientation_rpy": orientation,
+            "ik_config": config,
+            "path": str(path),
+        }
+
+    def _load_inner_posture_seed(self):
+        path = Path(THIGH_INNER_POSTURE_SEED_FILE)
+        if not path.is_file():
+            raise RuntimeError(f"大腿内侧构型种子不存在: {path}")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"无法读取大腿内侧构型种子 {path}: {exc}") from exc
+
+        pose = [float(value) for value in payload.get("pose", [])]
+        joints = [float(value) for value in payload.get("joint_deg", [])]
+        config = int(payload.get("ik_config", -1))
+        if len(pose) != 6 or len(joints) != 6:
+            raise RuntimeError(f"大腿内侧构型种子必须包含 6 维 pose 和 joint_deg: {path}")
+        if not all(math.isfinite(value) for value in pose + joints):
+            raise RuntimeError(f"大腿内侧构型种子包含非有限数值: {path}")
+        if not 0 <= config <= 7:
+            raise RuntimeError(f"大腿内侧构型种子的 ik_config 必须在 0~7: {config}")
+        if pose[2] < float(THIGH_INNER_POSTURE_LIFT_Z_MM):
+            raise RuntimeError(
+                f"大腿内侧构型种子 Z={pose[2]:.1f}mm 低于切换安全高度 "
+                f"{THIGH_INNER_POSTURE_LIFT_Z_MM:.1f}mm"
+            )
+        joint_soft_limits = payload.get("joint_soft_limits_deg")
+        if joint_soft_limits is not None:
+            if (
+                not isinstance(joint_soft_limits, list)
+                or len(joint_soft_limits) != 6
+                or any(
+                    not isinstance(limit, list) or len(limit) != 2
+                    for limit in joint_soft_limits
+                )
+            ):
+                raise RuntimeError(
+                    f"大腿内侧构型种子的 joint_soft_limits_deg 必须包含 6 组上下限: {path}"
+                )
+            joint_soft_limits = [
+                [float(limit[0]), float(limit[1])] for limit in joint_soft_limits
+            ]
+            for index, (joint, limits) in enumerate(zip(joints, joint_soft_limits), start=1):
+                lower, upper = limits
+                if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+                    raise RuntimeError(f"大腿内侧构型种子 J{index} 软限位无效: {limits}")
+                if joint < lower or joint > upper:
+                    raise RuntimeError(
+                        f"大腿内侧构型种子 J{index}={joint:.3f}deg 超出软限位 "
+                        f"[{lower:.3f}, {upper:.3f}]deg"
+                    )
+
+        print(
+            f"[InnerPosture] 已加载图2构型种子: config={config}, "
+            f"pose={self._fmt_pose(pose) if hasattr(self, '_fmt_pose') else pose}, file={path}"
+        )
+        return {
+            "pose": pose,
+            "joint_deg": joints,
+            "ik_config": config,
+            "joint_soft_limits_deg": joint_soft_limits,
+            "path": str(path),
+        }
+
+    def _fixed_motion_orientation(self):
+        if (
+            getattr(self, "massage_target", None) == "back"
+            and getattr(self, "back_posture_seed", None) is not None
+        ):
+            return list(self.back_posture_seed["orientation_rpy"])
+        if (
+            getattr(self, "massage_target", None) == "leg_inner"
+            and THIGH_INNER_POSTURE_SEED_ENABLE
+            and THIGH_INNER_USE_SEED_ORIENTATION
+            and getattr(self, "inner_posture_seed", None) is not None
+        ):
+            return list(self.inner_posture_seed["pose"][3:6])
+        if ROS2_KEEP_CURRENT_ORIENTATION and getattr(self, "motion_orientation", None) is not None:
+            return list(self.motion_orientation)
+        return None
 
     def _current_force_target_n(self):
         return abs(float(self.force_target_n))
@@ -2614,7 +2871,12 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
     def _pose_ik_ok(self, pose):
         try:
-            return self.robot.inverse_kin_ok(pose)
+            config = -1
+            if self.massage_target == "leg_inner" and self.inner_posture_seed is not None:
+                config = int(self.inner_posture_seed["ik_config"])
+            elif self.massage_target == "back" and self.back_posture_seed is not None:
+                config = int(self.back_posture_seed["ik_config"])
+            return self.robot.inverse_kin_ok(pose, config=config)
         except Exception as exc:
             print(f"逆解探针异常: {exc}")
             return False
@@ -2683,21 +2945,95 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             )
         return True
 
+    def _back_frame_reachability_ok(self, frame):
+        """Validate the full force/contact envelope for one back point."""
+        max_offset = max(
+            float(self.force_approach_max_offset_mm),
+            float(FORCE_CONTACT_OFFSET_MM),
+        )
+        lateral_mm = abs(float(FORCE_FEN_LATERAL_MM))
+        if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}:
+            lateral_mm = max(lateral_mm, abs(float(DIAN_AS_SMALL_FEN_LATERAL_MM)))
+
+        probes = [
+            (-float(self.hover_height_mm), 0.0),
+            (max_offset, 0.0),
+        ]
+        if lateral_mm > 0.0:
+            probes.extend(
+                [
+                    (max_offset, lateral_mm),
+                    (max_offset, -lateral_mm),
+                ]
+            )
+        return all(
+            self._pose_ik_ok(
+                self._pose_from_frame_offset(
+                    frame,
+                    offset_mm,
+                    split_offset_mm=lateral_offset_mm,
+                )
+            )
+            for offset_mm, lateral_offset_mm in probes
+        )
+
+    def _adjust_back_frames_for_reachability(self):
+        """Drop points whose complete fixed-posture force envelope is unreachable."""
+        if (
+            self.massage_target != "back"
+            or not BACK_POSTURE_SEED_ENABLE
+            or self.back_posture_seed is None
+            or not self.massage_frames
+        ):
+            return True
+
+        reachable_frames = []
+        failed_points = []
+        print(
+            "[BackReach] 背部固定构型可达性检查："
+            "验证悬空位、最大贴近位和分筋横向包络"
+        )
+        for fallback_index, frame in enumerate(self.massage_frames):
+            point_no = int(frame.get("index", fallback_index)) + 1
+            if self._back_frame_reachability_ok(frame):
+                reachable_frames.append(frame)
+            else:
+                failed_points.append(point_no)
+
+        if failed_points:
+            print(f"[BackReach] 完整动作包络不可达点: {failed_points}")
+            if not FT_CONTINUE_ON_POINT_ERROR:
+                return False
+            print("[BackReach] 单点失败容错已开启，执行前跳过这些点")
+        if not reachable_frames:
+            print("[BackReach] 没有剩余完整动作包络可达的背部点")
+            return False
+
+        self.massage_frames = reachable_frames
+        self.massage_points_mm = [frame["point_mm"] for frame in reachable_frames]
+        print(
+            f"[BackReach] 检查完成：保留 {len(reachable_frames)}/"
+            f"{len(reachable_frames) + len(failed_points)} 点"
+        )
+        return True
+
     def _apply_motion_orientation(self, pose):
-        if ROS2_KEEP_CURRENT_ORIENTATION and self.motion_orientation is not None:
-            pose[3], pose[4], pose[5] = self.motion_orientation
+        fixed_orientation = self._fixed_motion_orientation()
+        if fixed_orientation is not None:
+            pose[3], pose[4], pose[5] = fixed_orientation
         return pose
 
     def _pose_from_frame_offset(self, frame, offset_mm, split_offset_mm=0.0):
         point_mm = np.asarray(frame["point_mm"], dtype=np.float64)
         contact_axis_unit = np.asarray(frame["tool_z_unit"], dtype=np.float64)
         split_axis_unit = np.asarray(frame["split_axis_unit"], dtype=np.float64)
-        if ROS2_KEEP_CURRENT_ORIENTATION and self.motion_orientation is not None:
+        fixed_orientation = self._fixed_motion_orientation()
+        if fixed_orientation is not None:
             # FT_SetRCS(0) reports force in the active tool frame. When posture is
             # frozen, move along that same tool Z axis so commanded penetration and
             # measured Fz retain the same physical meaning.
             contact_axis_unit = np.asarray(
-                _tool_z_unit_from_rpy(*self.motion_orientation),
+                _tool_z_unit_from_rpy(*fixed_orientation),
                 dtype=np.float64,
             )
             projected_split = _project_axis_to_tool_plane(
@@ -2729,7 +3065,11 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
     def _current_pose_distance(self, pose):
         try:
-            current = self.robot.get_actual_tcp_pose()
+            fresh_pose = getattr(self.robot, "get_fresh_actual_tcp_pose", None)
+            if callable(fresh_pose):
+                current = fresh_pose()
+            else:
+                current = self.robot.get_actual_tcp_pose()
         except Exception:
             return None, None
         return _pose_distance(current, pose)
@@ -3132,6 +3472,11 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
     def _moveit_joint_fallback_allowed(self, context):
         if not MOVEIT_JOINT_FALLBACK:
             return False
+        if self._inner_posture_active or self._inner_posture_transitioning:
+            # A generic MoveIt solution is allowed to choose another shoulder/
+            # elbow/wrist branch.  Never use it while the body-clearance posture
+            # is being entered, held, or exited.
+            return False
         text = str(context)
         safe_keywords = (
             "安全高度",
@@ -3162,6 +3507,274 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             return True
         print(f"{context}: MoveIt MoveJ 兜底失败 (err={ret})")
         return False
+
+    def _joint_target_error_deg(self, target_joints_deg):
+        current = self.robot.get_actual_joint_positions_deg()
+        return max(
+            abs(_shortest_angle_delta_deg(current[index], target_joints_deg[index]))
+            for index in range(6)
+        )
+
+    def _enter_inner_posture_seed(self):
+        if self.massage_target != "leg_inner" or not THIGH_INNER_POSTURE_SEED_ENABLE:
+            return True
+        if self._inner_posture_active:
+            return True
+        if self.inner_posture_seed is None:
+            print("错误：大腿内侧模式未加载图2构型种子")
+            return False
+
+        seed_pose = list(self.inner_posture_seed["pose"])
+        seed_joints = list(self.inner_posture_seed["joint_deg"])
+        config = int(self.inner_posture_seed["ik_config"])
+        print(
+            f"[InnerPosture] 先在当前分支移动到高位切换点，再切换到图2构型 "
+            f"config={config}"
+        )
+
+        self._inner_previous_motion_orientation = (
+            None if self.motion_orientation is None else list(self.motion_orientation)
+        )
+        self._inner_posture_transitioning = True
+        self.robot.default_ik_config = -1
+        try:
+            with _RobotMotionSpeedScaleOverride(1.0):
+                reached_staging_pose = self._move_to_work_pose(
+                    seed_pose,
+                    "大腿内侧图2构型切换位",
+                    THIGH_INNER_POSTURE_SWITCH_VEL,
+                )
+
+                # Remember the automatically selected return branch at exactly
+                # the same Cartesian staging pose.  Exiting can then switch back
+                # without guessing the home configuration number.
+                self._inner_posture_return_joints_deg = (
+                    self.robot.get_actual_joint_positions_deg()
+                )
+                if not reached_staging_pose:
+                    current_pose = self.robot.get_actual_tcp_pose()
+                    near_joint_error = max(
+                        abs(
+                            _shortest_angle_delta_deg(
+                                self._inner_posture_return_joints_deg[index],
+                                seed_joints[index],
+                            )
+                        )
+                        for index in range(6)
+                    )
+                    if (
+                        float(current_pose[2]) < THIGH_INNER_POSTURE_LIFT_Z_MM
+                        or near_joint_error
+                        > THIGH_INNER_POSTURE_NEAR_JOINT_FALLBACK_DEG
+                    ):
+                        print(
+                            "错误：图2切换位 MoveL 失败，且不满足高位近关节兜底条件 "
+                            f"(z={current_pose[2]:.1f}mm, "
+                            f"joint_delta={near_joint_error:.2f}deg)"
+                        )
+                        self._inner_posture_return_joints_deg = None
+                        return False
+                    print(
+                        "[InnerPosture] 图2切换位 MoveL 未完成，但已处于高位且接近种子；"
+                        "允许低速 MoveJ 受限兜底 "
+                        f"(z={current_pose[2]:.1f}mm, "
+                        f"joint_delta={near_joint_error:.2f}deg <= "
+                        f"{THIGH_INNER_POSTURE_NEAR_JOINT_FALLBACK_DEG:.1f}deg)"
+                    )
+                ret = self.robot.MoveJ(
+                    seed_joints,
+                    tool=ROS2_TOOL,
+                    user=ROS2_USER,
+                    vel=THIGH_INNER_POSTURE_SWITCH_VEL,
+                    blendT=BLEND_BLOCKING,
+                )
+            if ret != 0:
+                print(f"错误：切换图2构型 MoveJ 失败 (err={ret})")
+                return False
+
+            # From this point onward every ordinary MoveL endpoint is solved on
+            # the taught branch.  A configured IK failure stops instead of
+            # silently returning to the colliding posture.
+            self.robot.default_ik_config = config
+            self._inner_posture_active = True
+            self.motion_orientation = list(seed_pose[3:6])
+            joint_error = self._joint_target_error_deg(seed_joints)
+            close, pos_dist, ori_dist = self._current_pose_close_to(
+                seed_pose,
+                pos_tol=5.0,
+                ori_tol=5.0,
+            )
+            if joint_error > THIGH_INNER_POSTURE_JOINT_TOL_DEG or not close:
+                print(
+                    "错误：图2构型切换后的反馈不符合种子 "
+                    f"(joint={joint_error:.2f}deg, pos={pos_dist}, ori={ori_dist})"
+                )
+                return False
+            print(
+                f"[InnerPosture] 图2构型已锁定: config={config}, "
+                f"joint_error={joint_error:.2f}deg"
+            )
+            return True
+        finally:
+            self._inner_posture_transitioning = False
+
+    def _activate_back_posture_seed(self):
+        if self.massage_target != "back" or not BACK_POSTURE_SEED_ENABLE:
+            return True
+        if self.back_posture_seed is None:
+            print("错误：背部模式未加载姿态种子")
+            return False
+
+        config = int(self.back_posture_seed["ik_config"])
+        current_pose = self.robot.get_actual_tcp_pose()
+        current_joints = self.robot.get_actual_joint_positions_deg()
+        ret, config_joints = self.robot.inverse_kin_joints_deg(
+            current_pose,
+            config=config,
+        )
+        if ret != 0 or config_joints is None:
+            print(f"错误：当前位姿无法按背部种子 config={config} 逆解 (err={ret})")
+            return False
+        config_error = max(
+            abs(_shortest_angle_delta_deg(current_joints[index], config_joints[index]))
+            for index in range(6)
+        )
+        if config_error > BACK_POSTURE_CONFIG_TOL_DEG:
+            print(
+                f"错误：当前机械臂不是背部种子要求的 config={config} 分支 "
+                f"(joint_error={config_error:.2f}deg > "
+                f"{BACK_POSTURE_CONFIG_TOL_DEG:.2f}deg)"
+            )
+            return False
+
+        self.robot.default_ik_config = config
+        self._back_posture_active = True
+        print(
+            f"[BackPosture] 已锁定当前构型 config={config}, "
+            f"joint_error={config_error:.2f}deg"
+        )
+        return True
+
+    def _back_probe_pose_path(self, hover_poses):
+        if not hover_poses:
+            return []
+        current = self.robot.get_actual_tcp_pose()
+        first = list(hover_poses[0])
+        transit_z = max(
+            float(current[2]),
+            float(first[2]) + ROS2_TRANSIT_MARGIN_MM,
+            ROS2_LIFT_SAFE_Z_MM,
+        )
+        transit = [first[0], first[1], transit_z, first[3], first[4], first[5]]
+        path = []
+        if ROS2_TRANSIT_LIFT_FIRST and float(current[2]) < transit_z - ROS2_TRANSIT_LIFT_TOL_MM:
+            lift = [current[0], current[1], transit_z, current[3], current[4], current[5]]
+            path.extend(_linear_transit_waypoints(current, lift, ROS2_SEGMENT_MAX_STEP_MM))
+            current = lift
+        path.extend(_linear_transit_waypoints(current, transit, ROS2_SEGMENT_MAX_STEP_MM))
+        path.extend(_linear_transit_waypoints(transit, first, ROS2_SEGMENT_MAX_STEP_MM))
+        for previous, target in zip(hover_poses, hover_poses[1:]):
+            path.extend(_linear_transit_waypoints(previous, target, ROS2_SEGMENT_MAX_STEP_MM))
+        return path
+
+    def _execute_back_hover_probe(self):
+        if self.massage_target != "back" or not BACK_TRAJECTORY_PROBE_ONLY:
+            return False
+        if not self.massage_frames:
+            print("错误：背部悬空探针没有已保存轨迹")
+            return False
+
+        hover_poses = [
+            self._pose_from_frame_offset(frame, -BACK_TRAJECTORY_PROBE_CLEARANCE_MM)
+            for frame in self.massage_frames
+        ]
+        probe_path = self._back_probe_pose_path(hover_poses)
+        failed_steps = [index for index, pose in enumerate(probe_path, start=1) if not self._pose_ik_ok(pose)]
+        if failed_steps:
+            print(f"错误：背部悬空探针分段逆解失败: {failed_steps}")
+            return False
+        print(
+            f"[BackProbe] 全路径逆解通过: frames={len(hover_poses)}, "
+            f"segments={len(probe_path)}, clearance={BACK_TRAJECTORY_PROBE_CLEARANCE_MM:.1f}mm"
+        )
+
+        with _RobotMotionSpeedScaleOverride(1.0):
+            if not self._move_to_work_pose(
+                hover_poses[0],
+                "背部悬空探针进入首点",
+                BACK_TRAJECTORY_PROBE_VEL,
+            ):
+                return False
+            for index, pose in enumerate(hover_poses[1:], start=2):
+                if not self._move_pose_segmented(
+                    pose,
+                    f"背部悬空探针点 {index}/{len(hover_poses)}",
+                    vel=BACK_TRAJECTORY_PROBE_VEL,
+                ):
+                    return False
+        print(
+            "[BackProbe] 背部全轨迹悬空探针完成；"
+            "未接触、未启动力控，停在最后一个悬空点"
+        )
+        return True
+
+    def _leave_inner_posture_seed(self):
+        if not getattr(self, "_inner_posture_active", False):
+            return True
+        if self.inner_posture_seed is None or self._inner_posture_return_joints_deg is None:
+            print("错误：缺少大腿内侧构型退出所需的高位返回关节")
+            return False
+
+        seed_pose = list(self.inner_posture_seed["pose"])
+        seed_joints = list(self.inner_posture_seed["joint_deg"])
+        self._inner_posture_transitioning = True
+        try:
+            current = self.robot.get_actual_tcp_pose()
+            lift_z = max(
+                float(current[2]),
+                float(seed_pose[2]),
+                float(THIGH_INNER_POSTURE_LIFT_Z_MM),
+            )
+            if float(current[2]) < lift_z - ROS2_TRANSIT_LIFT_TOL_MM:
+                lift_pose = list(current)
+                lift_pose[2] = lift_z
+                with _RobotMotionSpeedScaleOverride(1.0):
+                    if not self._move_pose_segmented(
+                        lift_pose,
+                        "大腿内侧退出前原地抬升",
+                        THIGH_INNER_POSTURE_SWITCH_VEL,
+                    ):
+                        return False
+
+            print("[InnerPosture] 返回高位图2种子，再切回进入前构型")
+            with _RobotMotionSpeedScaleOverride(1.0):
+                ret = self.robot.MoveJ(
+                    seed_joints,
+                    tool=ROS2_TOOL,
+                    user=ROS2_USER,
+                    vel=THIGH_INNER_POSTURE_SWITCH_VEL,
+                    blendT=BLEND_BLOCKING,
+                )
+                if ret == 0:
+                    ret = self.robot.MoveJ(
+                        self._inner_posture_return_joints_deg,
+                        tool=ROS2_TOOL,
+                        user=ROS2_USER,
+                        vel=THIGH_INNER_POSTURE_SWITCH_VEL,
+                        blendT=BLEND_BLOCKING,
+                    )
+            if ret != 0:
+                print(f"错误：退出图2构型 MoveJ 失败 (err={ret})")
+                return False
+
+            self.robot.default_ik_config = -1
+            self._inner_posture_active = False
+            self.motion_orientation = self._inner_previous_motion_orientation
+            self._inner_posture_return_joints_deg = None
+            print("[InnerPosture] 已在高位切回进入前构型")
+            return True
+        finally:
+            self._inner_posture_transitioning = False
 
     def _build_session_safe_pose(self):
         if ROS2_USE_LEGACY_SAFE_POSE:
@@ -4632,8 +5245,40 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             if not self._move_to_initial_safe_pose(safe_pose, should_move_to_safe):
                 return False
 
-            if not self._adjust_leg_frames_for_reachability():
+            if not self._activate_back_posture_seed():
                 return False
+
+            # A high-posture probe validates only the recorded Cartesian/joint
+            # branch transition.  It must not depend on a valid camera frame or
+            # a saved massage trajectory.
+            if not (
+                self.massage_target == "leg_inner"
+                and THIGH_INNER_POSTURE_PROBE_ONLY
+            ) and not self._adjust_leg_frames_for_reachability():
+                return False
+
+            if not self._adjust_back_frames_for_reachability():
+                return False
+
+            if not self._enter_inner_posture_seed():
+                return False
+
+            if self.massage_target == "leg_inner" and THIGH_INNER_POSTURE_PROBE_ONLY:
+                print(
+                    "[InnerPosture] 探针模式：仅验证高位图2构型，不下降、不接触、不启动力控 "
+                    f"(停留 {THIGH_INNER_POSTURE_PROBE_DWELL_S:.1f}s)"
+                )
+                time.sleep(THIGH_INNER_POSTURE_PROBE_DWELL_S)
+                if not self._leave_inner_posture_seed():
+                    return False
+                print(
+                    "[InnerPosture] 高位图2构型探针完成；"
+                    "停在高位种子切换点，不执行额外自动返回"
+                )
+                return True
+
+            if self.massage_target == "back" and BACK_TRAJECTORY_PROBE_ONLY:
+                return self._execute_back_hover_probe()
 
             if LASTTIME_ROS2_FORCE:
                 self.set_force_target_n(
@@ -4728,6 +5373,12 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
             print("\n返回安全位置...")
             self.update_preview_status("返回安全位置")
+            if not self._leave_inner_posture_seed():
+                print(
+                    "错误：未能在高位退出图2构型；保持当前位置，"
+                    "不继续自动返回，等待人工确认"
+                )
+                return False
             if not self._move_to_work_pose(safe_pose, "返回安全位置", TRANSIT_MOVE_VEL_FAST):
                 return False
 
@@ -4742,9 +5393,24 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             return False
         finally:
             self.close_force_controller()
+            if getattr(self, "_back_posture_active", False):
+                self.robot.default_ik_config = -1
+                self._back_posture_active = False
+            if getattr(self, "_inner_posture_active", False):
+                print(
+                    "[安全] 图2构型仍处于锁定状态。异常流程不会自动执行跨构型 MoveJ；"
+                    "请保持急停可用并人工确认周围空间后再恢复。"
+                )
 
     def run(self):
         try:
+            if self.massage_target == "leg_inner" and THIGH_INNER_POSTURE_PROBE_ONLY:
+                print(
+                    "[InnerPosture] 直接高位探针：跳过视觉检测和按摩轨迹，"
+                    "仅连接机械臂并验证图2构型"
+                )
+                self.init_robot()
+                return self.execute_massage_sequence()
             if _is_thigh_target(self.massage_target):
                 return self.run_leg_interactive()
             return self.run_back_interactive()
@@ -4815,12 +5481,28 @@ def main():
             f"inner_skip={THIGH_INNER_SKIP_POINTS if massage_target == 'leg_inner' else 0} "
             f"inner_tail_skip={THIGH_INNER_TAIL_SKIP_POINTS if massage_target == 'leg_inner' else 0}"
         )
+        if massage_target == "leg_inner":
+            print(
+                f"  大腿内侧图2构型: {'开启' if THIGH_INNER_POSTURE_SEED_ENABLE else '关闭'} "
+                f"seed={THIGH_INNER_POSTURE_SEED_FILE} "
+                f"seed_orientation={'on' if THIGH_INNER_USE_SEED_ORIENTATION else 'off'} "
+                f"switch_vel={THIGH_INNER_POSTURE_SWITCH_VEL:.1f} "
+                f"switch_min_z={THIGH_INNER_POSTURE_LIFT_Z_MM:.1f}mm "
+                f"probe_only={'on' if THIGH_INNER_POSTURE_PROBE_ONLY else 'off'}"
+            )
     else:
         print(
             f"  背部膀胱经线段缩短: neck={BACK_LINE_TRIM_NECK_RATIO * 100:.1f}% "
             f"tail={BACK_LINE_TRIM_TAIL_RATIO * 100:.1f}% "
             f"offset=({BACK_LINE_OFFSET_X_PX:+.1f}, {BACK_LINE_OFFSET_Y_PX:+.1f})px "
             f"horizontal_lock={'on' if BACK_LOCK_HORIZONTAL else 'off'}"
+        )
+        print(
+            f"  背部姿态种子: {'开启' if BACK_POSTURE_SEED_ENABLE else '关闭'} "
+            f"seed={BACK_POSTURE_SEED_FILE} "
+            f"hover_probe={'on' if BACK_TRAJECTORY_PROBE_ONLY else 'off'} "
+            f"probe_clearance={BACK_TRAJECTORY_PROBE_CLEARANCE_MM:.1f}mm "
+            f"probe_vel={BACK_TRAJECTORY_PROBE_VEL:.1f}"
         )
     print(f"  演示预览窗口: {'开启（实时跟踪，仅展示）' if ENABLE_LIVE_PREVIEW_WINDOW else '关闭'}")
     print(f"  工具/工件坐标系: tool={ROS2_TOOL}, user={ROS2_USER}")

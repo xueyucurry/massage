@@ -1,0 +1,30 @@
+{
+  "purpose": "back_hover_probe_orientation_seed",
+  "orientation_rpy": [
+    120.0,
+    -10.0,
+    85.0
+  ],
+  "ik_config": 6,
+  "reference_pose": [
+    573.1138916015625,
+    -56.66523361206055,
+    226.4935760498047,
+    142.89793395996094,
+    -5.48222541809082,
+    66.6266098022461
+  ],
+  "reference_joint_deg": [
+    164.1909942626953,
+    -58.734867095947266,
+    80.64204406738281,
+    30.646198272705078,
+    90.22212219238281,
+    9.330111503601074
+  ],
+  "validated_trajectory": "ft_locked_trajectory_output/back_trajectory_20260819_162652.json",
+  "validated_hover_clearance_mm": 60.0,
+  "minimum_joint_soft_limit_margin_deg": 6.98,
+  "validated_contact_search_max_offset_mm": 40.0,
+  "notes": "High-elbow config-6 orientation selected by controller IK sweep. All 10 saved back points, offsets from -60 mm hover through +40 mm contact search, +/-12 mm split offsets, and the segmented path from the restored high-elbow pose were verified reachable. FR5 collision-mesh analysis at +35 mm keeps the upper arm and forearm above Z=94 mm and Z=178 mm respectively; the extra +5 mm search was IK-verified and first used only after a successful 60 mm hover probe. Enable only through BACK_POSTURE_SEED_ENABLE and validate with BACK_TRAJECTORY_PROBE_ONLY before contact."
+}

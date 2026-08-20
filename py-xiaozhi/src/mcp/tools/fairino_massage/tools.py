@@ -75,6 +75,18 @@ async def adjust_force(args: Dict[str, Any]) -> str:
     return _dumps_result(result)
 
 
+async def set_pending_force(args: Dict[str, Any]) -> str:
+    runtime = get_runtime()
+    result = await runtime.set_pending_force(
+        direction=args.get("direction") or "",
+        delta_n=_optional_float(args.get("delta_n")),
+        target_force_n=_optional_float(args.get("target_force_n")),
+        target=args.get("target") or "auto",
+        actions=args.get("actions") or "all",
+    )
+    return _dumps_result(result)
+
+
 async def pause_massage(args: Dict[str, Any]) -> str:
     result = await get_runtime().pause()
     return _dumps_result(result)

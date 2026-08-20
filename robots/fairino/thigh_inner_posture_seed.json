@@ -1,0 +1,32 @@
+{
+  "purpose": "thigh_inner_clearance_posture_seed",
+  "pose": [
+    687.7416381835938,
+    31.314865112304688,
+    397.8937072753906,
+    113.52734375,
+    -9.852883338928223,
+    85.61112976074219
+  ],
+  "joint_deg": [
+    173.18478393554688,
+    -5.589974403381348,
+    -53.10834503173828,
+    82.0,
+    83.85396575927734,
+    8.08615493774414
+  ],
+  "ik_config": 4,
+  "joint_soft_limits_deg": [
+    [-175.0, 175.0],
+    [-265.0, 85.0],
+    [-160.0, 160.0],
+    [-265.0, 85.0],
+    [-175.0, 175.0],
+    [-175.0, 175.0]
+  ],
+  "captured_at": "2026-08-19T15:45:10+08:00",
+  "robot_ip": "192.168.58.2",
+  "state_topic": "nonrt_state_data",
+  "notes": "Derived from the manually taught high-clearance posture. J4 was reduced from 89.601883 deg to 82 deg because the controller soft upper limit is 85 deg; forward/inverse kinematics were verified for config 4. Position is a safe configuration-switch seed, not a massage trajectory point."
+}

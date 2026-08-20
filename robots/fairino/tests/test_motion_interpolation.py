@@ -73,6 +73,298 @@ class MotionCompletionTests(unittest.TestCase):
 
         self.assertLess(pos_tol, 0.08)
 
+    def test_fresh_tcp_pose_waits_past_cached_pre_approach_state(self):
+        proxy, consumed = self._proxy_with_states([_state(55.0, 1)])
+        proxy._state_callback(_state(0.0, 1))
+
+        pose = proxy.get_fresh_actual_tcp_pose(timeout_sec=1.0)
+
+        self.assertEqual(pose[0], 55.0)
+        self.assertEqual(consumed["count"], 1)
+
+    def test_force_close_check_uses_fresh_feedback(self):
+        demo = object.__new__(ft.LastTimeRos2Demo)
+        robot = types.SimpleNamespace(
+            get_actual_tcp_pose=mock.Mock(return_value=[0.0] * 6),
+            get_fresh_actual_tcp_pose=mock.Mock(
+                return_value=[55.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            ),
+        )
+        demo.robot = robot
+
+        close, pos_dist, _ = demo._current_pose_close_to([0.0] * 6)
+
+        self.assertFalse(close)
+        self.assertEqual(pos_dist, 55.0)
+        robot.get_fresh_actual_tcp_pose.assert_called_once_with()
+        robot.get_actual_tcp_pose.assert_not_called()
+
+
+class ConfiguredInverseKinematicsTests(unittest.TestCase):
+    def _proxy(self, responses):
+        proxy = ft.Ros2RobotProxy("test")
+        proxy.latest_state = _state(0.0, 1)
+        proxy.spin_once = mock.Mock()
+        proxy.wait_motion_done = mock.Mock(return_value=True)
+        calls = []
+
+        def call(cmd, **_kwargs):
+            calls.append(cmd)
+            if cmd.startswith("GetInverseKin"):
+                return responses.get("ik", (0, "0,1,2,3,4,5,6"))
+            return 0, "0"
+
+        proxy._call = call
+        return proxy, calls
+
+    def test_configured_move_uses_joint_target_for_linear_motion(self):
+        proxy, calls = self._proxy({})
+
+        ret = proxy.MoveCart(
+            [10.0, 20.0, 30.0, 1.0, 2.0, 3.0],
+            config=4,
+        )
+
+        self.assertEqual(ret, 0)
+        self.assertTrue(calls[0].endswith(",4)"))
+        self.assertEqual(calls[1], "JNTPoint(1,1,2,3,4,5,6)")
+        self.assertTrue(calls[2].startswith("MoveL(JNT1,"))
+
+    def test_default_config_is_applied_when_call_uses_reference_current(self):
+        proxy, calls = self._proxy({})
+        proxy.default_ik_config = 4
+
+        ret = proxy.MoveCart([10.0, 20.0, 30.0, 1.0, 2.0, 3.0])
+
+        self.assertEqual(ret, 0)
+        self.assertTrue(calls[0].endswith(",4)"))
+        self.assertTrue(calls[2].startswith("MoveL(JNT1,"))
+
+    def test_configured_ik_failure_stops_before_motion_command(self):
+        proxy, calls = self._proxy({"ik": (112, "112,0,0,0,nan,0,0")})
+
+        ret = proxy.MoveCart([10.0, 20.0, 30.0, 1.0, 2.0, 3.0], config=4)
+
+        self.assertEqual(ret, 112)
+        self.assertEqual(len(calls), 1)
+
+    def test_inverse_kin_parser_rejects_nonfinite_joint(self):
+        self.assertIsNone(ft._parse_inverse_kin_joints("0,1,2,3,nan,5,6"))
+
+
+class InnerThighPostureTests(unittest.TestCase):
+    def test_seed_is_inside_recorded_joint_soft_limits(self):
+        demo = ft.LastTimeRos2Demo("leg_inner")
+
+        for joint, (lower, upper) in zip(
+            demo.inner_posture_seed["joint_deg"],
+            demo.inner_posture_seed["joint_soft_limits_deg"],
+        ):
+            self.assertGreaterEqual(joint, lower)
+            self.assertLessEqual(joint, upper)
+
+    def test_seed_orientation_replaces_position_but_not_visual_start_point(self):
+        demo = ft.LastTimeRos2Demo("leg_inner")
+        frame = {
+            "point_mm": [100.0, 200.0, 300.0],
+            "tool_z_unit": [0.0, 0.0, 1.0],
+            "split_axis_unit": [1.0, 0.0, 0.0],
+            "base_pose": [0.0, 0.0, 0.0],
+        }
+
+        pose = demo._pose_from_frame_offset(frame, ft.TOOL_TIP_LENGTH_MM)
+
+        self.assertEqual(pose[:3], frame["point_mm"])
+        self.assertEqual(pose[3:], demo.inner_posture_seed["pose"][3:6])
+
+    def test_enter_and_leave_switch_at_same_taught_staging_pose(self):
+        demo = ft.LastTimeRos2Demo("leg_inner")
+        seed_pose = list(demo.inner_posture_seed["pose"])
+        seed_joints = list(demo.inner_posture_seed["joint_deg"])
+        return_joints = [10.0, -20.0, -30.0, 40.0, 50.0, 60.0]
+        robot = types.SimpleNamespace(
+            default_ik_config=-1,
+            get_actual_joint_positions_deg=mock.Mock(
+                side_effect=[return_joints, seed_joints]
+            ),
+            get_actual_tcp_pose=mock.Mock(return_value=seed_pose),
+            MoveJ=mock.Mock(return_value=0),
+        )
+        demo.robot = robot
+        demo._move_to_work_pose = mock.Mock(return_value=True)
+        demo._current_pose_close_to = mock.Mock(return_value=(True, 0.0, 0.0))
+        demo._move_pose_segmented = mock.Mock(return_value=True)
+
+        self.assertTrue(demo._enter_inner_posture_seed())
+        self.assertTrue(demo._inner_posture_active)
+        self.assertEqual(robot.default_ik_config, 4)
+        self.assertEqual(demo._inner_posture_return_joints_deg, return_joints)
+
+        self.assertTrue(demo._leave_inner_posture_seed())
+        self.assertFalse(demo._inner_posture_active)
+        self.assertEqual(robot.default_ik_config, -1)
+        self.assertEqual(robot.MoveJ.call_count, 3)
+
+    def test_enter_allows_near_seed_high_joint_fallback(self):
+        demo = ft.LastTimeRos2Demo("leg_inner")
+        seed_pose = list(demo.inner_posture_seed["pose"])
+        seed_joints = list(demo.inner_posture_seed["joint_deg"])
+        near_joints = list(seed_joints)
+        near_joints[3] -= 10.0
+        high_pose = list(seed_pose)
+        high_pose[2] += 80.0
+        robot = types.SimpleNamespace(
+            default_ik_config=-1,
+            get_actual_joint_positions_deg=mock.Mock(
+                side_effect=[near_joints, seed_joints]
+            ),
+            get_actual_tcp_pose=mock.Mock(return_value=high_pose),
+            MoveJ=mock.Mock(return_value=0),
+        )
+        demo.robot = robot
+        demo._move_to_work_pose = mock.Mock(return_value=False)
+        demo._current_pose_close_to = mock.Mock(return_value=(True, 0.0, 0.0))
+
+        self.assertTrue(demo._enter_inner_posture_seed())
+        self.assertTrue(demo._inner_posture_active)
+        self.assertEqual(demo._inner_posture_return_joints_deg, near_joints)
+        robot.MoveJ.assert_called_once_with(
+            seed_joints,
+            tool=ft.ROS2_TOOL,
+            user=ft.ROS2_USER,
+            vel=ft.THIGH_INNER_POSTURE_SWITCH_VEL,
+            blendT=ft.BLEND_BLOCKING,
+        )
+
+    def test_enter_rejects_low_or_far_joint_fallback(self):
+        for current_pose, current_joints in (
+            (
+                [
+                    *self._seed_pose_prefix(),
+                    ft.THIGH_INNER_POSTURE_LIFT_Z_MM - 1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+                None,
+            ),
+            (None, None),
+        ):
+            demo = ft.LastTimeRos2Demo("leg_inner")
+            seed_pose = list(demo.inner_posture_seed["pose"])
+            seed_joints = list(demo.inner_posture_seed["joint_deg"])
+            if current_pose is None:
+                current_pose = list(seed_pose)
+            if current_joints is None:
+                current_joints = list(seed_joints)
+            if current_pose[2] >= ft.THIGH_INNER_POSTURE_LIFT_Z_MM:
+                current_joints[0] += ft.THIGH_INNER_POSTURE_NEAR_JOINT_FALLBACK_DEG + 1.0
+            robot = types.SimpleNamespace(
+                default_ik_config=-1,
+                get_actual_joint_positions_deg=mock.Mock(return_value=current_joints),
+                get_actual_tcp_pose=mock.Mock(return_value=current_pose),
+                MoveJ=mock.Mock(return_value=0),
+            )
+            demo.robot = robot
+            demo._move_to_work_pose = mock.Mock(return_value=False)
+
+            self.assertFalse(demo._enter_inner_posture_seed())
+            robot.MoveJ.assert_not_called()
+
+    @staticmethod
+    def _seed_pose_prefix():
+        return [0.0, 0.0]
+
+
+class BackPostureProbeTests(unittest.TestCase):
+    def test_fixed_back_seed_orientation_preserves_visual_position(self):
+        with mock.patch.object(ft, "BACK_POSTURE_SEED_ENABLE", True):
+            demo = ft.LastTimeRos2Demo("back")
+        frame = {
+            "point_mm": [100.0, 200.0, 300.0],
+            "tool_z_unit": [0.0, 0.0, 1.0],
+            "split_axis_unit": [1.0, 0.0, 0.0],
+            "base_pose": [0.0, 0.0, 0.0],
+        }
+
+        pose = demo._pose_from_frame_offset(frame, -60.0)
+
+        self.assertEqual(pose[3:], demo.back_posture_seed["orientation_rpy"])
+
+    def test_back_seed_rejects_wrong_current_config(self):
+        demo = object.__new__(ft.LastTimeRos2Demo)
+        demo.massage_target = "back"
+        demo.back_posture_seed = {"ik_config": 4}
+        demo._back_posture_active = False
+        demo.robot = types.SimpleNamespace(
+            default_ik_config=-1,
+            get_actual_tcp_pose=mock.Mock(return_value=[1.0] * 6),
+            get_actual_joint_positions_deg=mock.Mock(return_value=[0.0] * 6),
+            inverse_kin_joints_deg=mock.Mock(return_value=(0, [10.0] * 6)),
+        )
+
+        with mock.patch.object(ft, "BACK_POSTURE_SEED_ENABLE", True):
+            self.assertFalse(demo._activate_back_posture_seed())
+
+        self.assertEqual(demo.robot.default_ik_config, -1)
+
+    def test_back_reachability_filter_drops_incomplete_force_envelope(self):
+        demo = object.__new__(ft.LastTimeRos2Demo)
+        demo.massage_target = "back"
+        demo.back_posture_seed = {"ik_config": 6}
+        demo.hover_height_mm = 20.0
+        demo.force_approach_max_offset_mm = 40.0
+        demo.massage_frames = [
+            {"index": 0, "point_mm": [1.0, 0.0, 0.0]},
+            {"index": 1, "point_mm": [2.0, 0.0, 0.0]},
+        ]
+        demo.massage_points_mm = [frame["point_mm"] for frame in demo.massage_frames]
+        demo._pose_from_frame_offset = mock.Mock(
+            side_effect=lambda frame, offset, split_offset_mm=0.0: [
+                frame["index"],
+                offset,
+                split_offset_mm,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        )
+        demo._pose_ik_ok = mock.Mock(
+            side_effect=lambda pose: not (pose[0] == 0 and pose[1] == 40.0)
+        )
+
+        with mock.patch.object(ft, "BACK_POSTURE_SEED_ENABLE", True), mock.patch.object(
+            ft,
+            "FT_CONTINUE_ON_POINT_ERROR",
+            True,
+        ):
+            self.assertTrue(demo._adjust_back_frames_for_reachability())
+
+        self.assertEqual([frame["index"] for frame in demo.massage_frames], [1])
+        self.assertEqual(demo.massage_points_mm, [[2.0, 0.0, 0.0]])
+
+    def test_back_hover_probe_never_calls_contact_actions(self):
+        demo = object.__new__(ft.LastTimeRos2Demo)
+        demo.massage_target = "back"
+        demo.massage_frames = [{"index": 0}, {"index": 1}]
+        demo._pose_from_frame_offset = mock.Mock(
+            side_effect=[[1.0, 2.0, 300.0, 4.0, 5.0, 6.0], [2.0, 3.0, 300.0, 4.0, 5.0, 6.0]]
+        )
+        demo._back_probe_pose_path = mock.Mock(return_value=[[1.0] * 6])
+        demo._pose_ik_ok = mock.Mock(return_value=True)
+        demo._move_to_work_pose = mock.Mock(return_value=True)
+        demo._move_pose_segmented = mock.Mock(return_value=True)
+        demo.execute_dian_jin = mock.Mock()
+        demo.execute_fen_jin = mock.Mock()
+        demo.execute_shun_jin = mock.Mock()
+
+        with mock.patch.object(ft, "BACK_TRAJECTORY_PROBE_ONLY", True):
+            self.assertTrue(demo._execute_back_hover_probe())
+
+        demo.execute_dian_jin.assert_not_called()
+        demo.execute_fen_jin.assert_not_called()
+        demo.execute_shun_jin.assert_not_called()
+
 
 class ServoInterpolationTests(unittest.TestCase):
     def test_default_short_move_has_at_least_eight_control_periods(self):
@@ -180,7 +472,11 @@ class MassageSequenceTests(unittest.TestCase):
         demo.hover_height_mm = 20.0
         demo._build_session_safe_pose = mock.Mock(return_value=([0.0] * 6, False))
         demo._move_to_initial_safe_pose = mock.Mock(return_value=True)
+        demo._activate_back_posture_seed = mock.Mock(return_value=True)
         demo._adjust_leg_frames_for_reachability = mock.Mock(return_value=True)
+        demo._adjust_back_frames_for_reachability = mock.Mock(return_value=True)
+        demo._enter_inner_posture_seed = mock.Mock(return_value=True)
+        demo._leave_inner_posture_seed = mock.Mock(return_value=True)
         demo.update_preview_status = mock.Mock()
         demo._pose_from_frame_offset = mock.Mock(return_value=[0.0] * 6)
         demo._move_to_work_pose = mock.Mock(return_value=True)
@@ -227,6 +523,43 @@ class MassageSequenceTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(events, ["dian", "fen"])
         demo.execute_shun_jin.assert_not_called()
+
+    def test_inner_posture_probe_never_runs_contact_actions(self):
+        events = []
+        demo = self._demo(events)
+        demo.massage_target = "leg_inner"
+
+        with mock.patch.object(ft, "LASTTIME_ROS2_FORCE", False), mock.patch.object(
+            ft,
+            "THIGH_INNER_POSTURE_PROBE_ONLY",
+            True,
+        ), mock.patch.object(ft, "THIGH_INNER_POSTURE_PROBE_DWELL_S", 0.0):
+            result = demo.execute_massage_sequence()
+
+        self.assertTrue(result)
+        self.assertEqual(events, [])
+        demo._adjust_leg_frames_for_reachability.assert_not_called()
+        demo._enter_inner_posture_seed.assert_called_once()
+        demo._leave_inner_posture_seed.assert_called_once()
+        demo._move_to_work_pose.assert_not_called()
+        demo.execute_dian_jin.assert_not_called()
+        demo.execute_fen_jin.assert_not_called()
+        demo.execute_shun_jin.assert_not_called()
+
+    def test_inner_posture_probe_run_bypasses_vision(self):
+        demo = object.__new__(ft.LastTimeRos2Demo)
+        demo.massage_target = "leg_inner"
+        demo.init_robot = mock.Mock()
+        demo.execute_massage_sequence = mock.Mock(return_value=True)
+        demo.run_leg_interactive = mock.Mock()
+
+        with mock.patch.object(ft, "THIGH_INNER_POSTURE_PROBE_ONLY", True):
+            result = demo.run()
+
+        self.assertTrue(result)
+        demo.init_robot.assert_called_once_with()
+        demo.execute_massage_sequence.assert_called_once_with()
+        demo.run_leg_interactive.assert_not_called()
 
 
 class ContinuousForceApproachTests(unittest.TestCase):

@@ -137,6 +137,14 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         self._agent_applied_force_adjust_seqs = set()
         self._agent_force_telemetry_socket = None
         self._agent_force_telemetry_last_at = 0.0
+        self.session_force_target_n = None
+
+    def _force_target_for_session_action(self, action):
+        if self.session_force_target_n not in (None, ""):
+            return float(self.session_force_target_n)
+        return float(
+            ft._force_target_for_massage_action(self.massage_target, action)
+        )
 
     def _agent_force_reading_valid(self, data):
         if not isinstance(data, (list, tuple)) or len(data) < 6:
@@ -232,6 +240,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             requested,
             context=str(adjustment.get("source") or "语音力度调整"),
         )
+        if self.session_force_target_n not in (None, ""):
+            self.session_force_target_n = float(new_force)
         if seq:
             self._agent_applied_force_adjust_seqs.add(seq)
 
@@ -1522,7 +1532,11 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 if not self._move_to_initial_safe_pose(safe_pose, should_move_to_safe):
                     return False
 
+            if not self._activate_back_posture_seed():
+                return False
             if not self._adjust_leg_frames_for_reachability():
+                return False
+            if not self._adjust_back_frames_for_reachability():
                 return False
             if use_current_frames:
                 frames = list(self.massage_frames)
@@ -1537,10 +1551,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                         else "point_actions"
                     )
                     self.set_force_target_n(
-                        ft._force_target_for_massage_action(
-                            self.massage_target,
-                            initial_action,
-                        ),
+                        self._force_target_for_session_action(initial_action),
                         context="顺筋目标力"
                         if initial_action == "shun_jin"
                         else "点筋/分筋目标力",
@@ -1725,10 +1736,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
 
                 if not (resume_from_local_hover and start_stage == "shun_jin"):
                     self.set_force_target_n(
-                        ft._force_target_for_massage_action(
-                            self.massage_target,
-                            "shun_jin",
-                        ),
+                        self._force_target_for_session_action("shun_jin"),
                         context="顺筋目标力",
                     )
                 print("\n回到顺筋起点...")

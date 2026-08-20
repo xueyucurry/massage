@@ -26,6 +26,7 @@ class PropertyType(Enum):
 
     BOOLEAN = "boolean"
     INTEGER = "integer"
+    NUMBER = "number"
     STRING = "string"
 
 
@@ -38,8 +39,8 @@ class Property:
     name: str
     type: PropertyType
     default_value: Optional[Any] = None
-    min_value: Optional[int] = None
-    max_value: Optional[int] = None
+    min_value: Optional[Union[int, float]] = None
+    max_value: Optional[Union[int, float]] = None
 
     @property
     def has_default_value(self) -> bool:
@@ -53,7 +54,7 @@ class Property:
         """
         验证并返回值.
         """
-        if self.type == PropertyType.INTEGER and self.has_range:
+        if self.type in {PropertyType.INTEGER, PropertyType.NUMBER} and self.has_range:
             if value < self.min_value:
                 raise ValueError(
                     f"Value {value} is below minimum allowed: " f"{self.min_value}"
@@ -73,7 +74,7 @@ class Property:
         if self.has_default_value:
             result["default"] = self.default_value
 
-        if self.type == PropertyType.INTEGER:
+        if self.type in {PropertyType.INTEGER, PropertyType.NUMBER}:
             if self.min_value is not None:
                 result["minimum"] = self.min_value
             if self.max_value is not None:
@@ -133,6 +134,10 @@ class PropertyList:
                     value, (int, float)
                 ):
                     result[prop.name] = prop.value(int(value))
+                elif prop.type == PropertyType.NUMBER and isinstance(
+                    value, (int, float)
+                ) and not isinstance(value, bool):
+                    result[prop.name] = prop.value(float(value))
                 elif prop.type == PropertyType.STRING and isinstance(value, str):
                     result[prop.name] = value
                 else:

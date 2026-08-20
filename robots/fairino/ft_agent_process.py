@@ -43,6 +43,7 @@ def _empty_state():
         "last_force_adjustment": None,
         "last_force_adjust_seq": None,
         "pending_force_adjustment": None,
+        "session_force_override_active": False,
         "message": None,
         "last_result": None,
         "worker_pid": None,
@@ -415,6 +416,8 @@ def run_execute(args):
         trajectory = load_result.get("trajectory") or {}
         if args.force_target_n is not None:
             api.demo.set_force_target_n(args.force_target_n, context="会话力度恢复")
+            if args.force_target_override:
+                api.demo.session_force_target_n = float(api.demo.force_target_n)
             trajectory["force_target_n"] = float(api.demo.force_target_n)
         _update_state(
             args.state_path,
@@ -554,6 +557,7 @@ def build_parser():
     execute.add_argument("--control-path", required=True)
     execute.add_argument("--result-path", required=True)
     execute.add_argument("--force-target-n", type=float, default=None)
+    execute.add_argument("--force-target-override", action="store_true")
 
     return parser
 

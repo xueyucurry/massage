@@ -366,6 +366,12 @@ JSON 主要字段：
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `BACK_HOVER_HEIGHT_MM` | `20.0` | 背部模式悬空高度 |
+| `BACK_POSTURE_SEED_ENABLE` | `0` | 启用 `back_posture_seed.json` 中经过逐点逆解验证的背部固定朝向和构型；底层手动运行默认关闭，GUI/语音执行脚本默认开启 |
+| `BACK_POSTURE_SEED_FILE` | `robots/fairino/back_posture_seed.json` | 背部固定朝向、构型和验证来源 |
+| `BACK_POSTURE_CONFIG_TOL_DEG` | `2.0` | 当前关节必须与种子构型逆解匹配的最大误差，超出即禁止运动 |
+| `BACK_TRAJECTORY_PROBE_ONLY` | `0` | `1` 时只遍历背部悬空轨迹，不接触、不启动力控、不执行按摩动作 |
+| `BACK_TRAJECTORY_PROBE_CLEARANCE_MM` | `60.0` | 背部悬空探针与视觉表面的工具端间隙 |
+| `BACK_TRAJECTORY_PROBE_VEL` | `10.0` | 背部悬空探针基础速度 |
 | `BACK_MIN_DEPTH_RATIO` | `0.50` | 背部保存轨迹所需最小深度有效率 |
 | `BACK_LINE_TRIM_NECK_RATIO` | `0.08` | 背部采样线靠颈部端缩短比例 |
 | `BACK_LINE_TRIM_TAIL_RATIO` | `0.04` | 背部采样线靠尾端缩短比例 |
@@ -377,6 +383,22 @@ JSON 主要字段：
 | `THIGH_STABLE_FRAMES` | `5` | 腿部检测稳定帧数 |
 | `THIGH_MIN_DEPTH_RATIO` | `0.70` | 腿部保存轨迹所需最小深度有效率 |
 | `THIGH_INNER_SKIP_POINTS` | `3` | 大腿内侧模式跳过前几个采样点 |
+| `THIGH_INNER_POSTURE_SEED_ENABLE` | `1` | 大腿内侧启用图2高位构型种子；关闭后恢复参考当前关节的旧行为 |
+| `THIGH_INNER_POSTURE_SEED_FILE` | `robots/fairino/thigh_inner_posture_seed.json` | 图2高位 TCP、J1～J6、关节软限位和 FAIRINO `ik_config` 记录文件；加载时拒绝越限种子 |
+| `THIGH_INNER_USE_SEED_ORIENTATION` | `1` | 起始 XYZ 仍来自视觉，但 TCP 大方向和工具 Z 使用图2种子 |
+| `THIGH_INNER_POSTURE_SWITCH_VEL` | `10.0` | 在高位切入/切出图2关节构型的 MoveJ 基础速度 |
+| `THIGH_INNER_POSTURE_JOINT_TOL_DEG` | `2.0` | 切入图2构型后的最大关节反馈误差 |
+| `THIGH_INNER_POSTURE_NEAR_JOINT_FALLBACK_DEG` | `20.0` | 高位笛卡尔切换未完成时，允许低速 MoveJ 兜底的最大关节差；同时要求 TCP 不低于切换最低 Z |
+| `THIGH_INNER_POSTURE_LIFT_Z_MM` | `390.0` | 构型切换种子及退出前抬升的最低基坐标 Z |
+| `THIGH_INNER_POSTURE_PROBE_ONLY` | `0` | `1` 时只在高位切入、停留并切回图2构型，不下降、不接触、不启动力控；完成后停在高位种子切换点，不额外返回启动位 |
+| `THIGH_INNER_POSTURE_PROBE_DWELL_S` | `5.0` | 高位构型探针停留观察时间 |
+
+大腿内侧的种子位置不是按摩起点。程序先用视觉生成真实轨迹，再保留视觉 XYZ、
+采用种子的 TCP 大方向，并强制每个普通 MoveL 目标使用记录的 `ik_config`。进入时先在
+原构型下移动到高位种子位，记录该处返回关节，然后以低速 MoveJ 切入图2构型；结束
+时在同一高位切回原构型。指定 config 无逆解时立即停止，不允许回退到可能碰腿的分支。
+若高位笛卡尔过渡未完全到达，只有在 TCP 仍高于最低切换 Z 且所有关节已接近种子时，
+才允许受限低速 MoveJ 兜底；任一条件不满足都会停止。
 
 ### 恒力控制
 

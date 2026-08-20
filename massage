@@ -33,6 +33,7 @@ export MOVEIT_IK_SERVICE="${MOVEIT_IK_SERVICE:-compute_ik}"
 export MASSAGE_HOME_POSE_FILE="${MASSAGE_HOME_POSE_FILE:-${HOME_POSE_FILE}}"
 export MASSAGE_HOME_MOVE_VEL="${MASSAGE_HOME_MOVE_VEL:-20}"
 export MASSAGE_HOME_SAFE_Z_MM="${MASSAGE_HOME_SAFE_Z_MM:-300}"
+export MASSAGE_HOME_JOINT_TRANSITION="${MASSAGE_HOME_JOINT_TRANSITION:-1}"
 export MASSAGE_HOME_ON_START="${MASSAGE_HOME_ON_START:-1}"
 export MASSAGE_HOME_ON_STOP="${MASSAGE_HOME_ON_STOP:-1}"
 export MASSAGE_HOME_ON_GUI_START="${MASSAGE_HOME_ON_GUI_START:-1}"
@@ -78,6 +79,7 @@ Environment:
   MASSAGE_HOME_POSE_FILE=${MASSAGE_HOME_POSE_FILE}
   MASSAGE_HOME_MOVE_VEL=${MASSAGE_HOME_MOVE_VEL}
   MASSAGE_HOME_SAFE_Z_MM=${MASSAGE_HOME_SAFE_Z_MM}
+  MASSAGE_HOME_JOINT_TRANSITION=${MASSAGE_HOME_JOINT_TRANSITION}
   MASSAGE_HOME_ON_GUI_START=${MASSAGE_HOME_ON_GUI_START}
   XIAOZHI_PYTHON=${XIAOZHI_PYTHON}
   XIAOZHI_PUSH_TO_TALK_ONLY=${XIAOZHI_PUSH_TO_TALK_ONLY:-1}
@@ -396,6 +398,10 @@ motion_wait_s = float(os.environ.get("MASSAGE_HOME_MOTION_WAIT_S", "30.0"))
 pose_tol_mm = float(os.environ.get("MASSAGE_HOME_POSE_TOL_MM", "3.0"))
 ori_tol_deg = float(os.environ.get("MASSAGE_HOME_ORI_TOL_DEG", "3.0"))
 z_tol_mm = float(os.environ.get("MASSAGE_HOME_Z_TOL_MM", "2.0"))
+joint_transition_enabled = os.environ.get(
+    "MASSAGE_HOME_JOINT_TRANSITION", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+ik_seed_tol_deg = float(os.environ.get("MASSAGE_HOME_IK_SEED_TOL_DEG", "2.0"))
 
 
 def _fmt(value):
@@ -429,6 +435,43 @@ def _joints_from_msg(msg):
             return None
         joints.append(float(getattr(msg, name)))
     return joints
+
+
+def _joint_error_deg(a, b):
+    return max(
+        abs((float(a[i]) - float(b[i]) + 180.0) % 360.0 - 180.0)
+        for i in range(6)
+    )
+
+
+def _inverse_kin(pose, config):
+    cmd = "GetInverseKin(0," + ",".join(_fmt(v) for v in pose) + f",{int(config)})"
+    code, result = _call(cmd, check=False)
+    if code != 0:
+        return None
+    fields = str(result).split(",")
+    if len(fields) < 7:
+        return None
+    try:
+        return [float(value) for value in fields[1:7]]
+    except ValueError:
+        return None
+
+
+def _infer_ik_config(pose, joint_seed):
+    if joint_seed is None or len(joint_seed) < 6:
+        return None
+    best = None
+    for config in range(8):
+        solution = _inverse_kin(pose, config)
+        if solution is None:
+            continue
+        error = _joint_error_deg(solution, joint_seed)
+        if best is None or error < best[0]:
+            best = (error, config)
+    if best is None or best[0] > ik_seed_tol_deg:
+        return None
+    return best[1]
 
 
 def _pose_text(pose):
@@ -497,11 +540,32 @@ def _wait_motion(target):
     return False
 
 
+def _recover_motion_error(label):
+    print(f"{label}: 清除运动错误后切换为安全高度关节运动")
+    for cmd in ("StopMotion()", "ResetAllError()"):
+        code, result = _call(cmd, check=False)
+        if code != 0:
+            print(f"{label}: {cmd} 返回 {result}", file=sys.stderr)
+        time.sleep(0.1)
+    code, result = _call("GetErrorCode()", check=False)
+    if code != 0 or result != "0,0":
+        raise RuntimeError(f"{label}: 控制器错误未清除: {result}")
+    _call(f"SetSpeed({vel})", check=False)
+
+
 def _move_pose(pose, label):
     print(f"{label}: target={_pose_text(pose)}")
     _call("CARTPoint(1," + ",".join(_fmt(v) for v in pose) + ")")
     _call(f"MoveL(CART1,{vel},{tool},{user})")
     if not _wait_motion(pose):
+        raise RuntimeError(f"{label}: 等待到位失败")
+
+
+def _move_joints(joints, target_pose, label):
+    print(f"{label}: joints={_pose_text(joints)} target={_pose_text(target_pose)}")
+    _call("JNTPoint(1," + ",".join(_fmt(v) for v in joints) + ")")
+    _call(f"MoveJ(JNT1,{vel},{tool},{user})")
+    if not _wait_motion(target_pose):
         raise RuntimeError(f"{label}: 等待到位失败")
 
 
@@ -513,10 +577,13 @@ try:
     current = _pose_from_msg(msg)
 
     if mode == "record":
+        current_joints = _joints_from_msg(msg)
+        ik_config = _infer_ik_config(current, current_joints)
         pose_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "pose": current,
-            "joint_deg": _joints_from_msg(msg),
+            "joint_deg": current_joints,
+            "ik_config": ik_config,
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "robot_ip": os.environ.get("ROBOT_IP", ""),
             "state_topic": state_topic,
@@ -533,6 +600,14 @@ try:
 
     payload = json.loads(pose_file.read_text(encoding="utf-8"))
     home = [float(v) for v in payload["pose"]]
+    home_joints = payload.get("joint_deg")
+    if home_joints is not None:
+        home_joints = [float(v) for v in home_joints]
+    home_config = payload.get("ik_config")
+    if home_config is not None:
+        home_config = int(home_config)
+    if home_config not in range(8):
+        home_config = _infer_ik_config(home, home_joints)
     close, pos, ori = _close(current, home)
     if close:
         print(f"当前已接近记录位，跳过回位 pos={pos:.2f}mm ori={ori:.2f}deg")
@@ -553,7 +628,29 @@ try:
     current = _pose_from_msg(msg)
     close_high, _, _ = _close(current, high_home)
     if not close_high:
-        _move_pose(high_home, "回位-安全高度平移")
+        high_home_joints = None
+        current_matches_home_config = False
+        if joint_transition_enabled and home_config is not None:
+            high_home_joints = _inverse_kin(high_home, home_config)
+            current_home_solution = _inverse_kin(current, home_config)
+            current_joints = _joints_from_msg(msg)
+            current_matches_home_config = (
+                current_home_solution is not None
+                and current_joints is not None
+                and _joint_error_deg(current_home_solution, current_joints) <= ik_seed_tol_deg
+            )
+
+        if high_home_joints is not None and not current_matches_home_config:
+            print(f"回位: 当前 IK 构型与记录构型 {home_config} 不同，不能使用单条 MoveL 切换")
+            _move_joints(high_home_joints, high_home, "回位-安全高度构型切换")
+        else:
+            try:
+                _move_pose(high_home, "回位-安全高度平移")
+            except RuntimeError:
+                if high_home_joints is None:
+                    raise
+                _recover_motion_error("回位-安全高度平移失败")
+                _move_joints(high_home_joints, high_home, "回位-安全高度关节兜底")
 
     msg = _wait_state(state_wait_s)
     current = _pose_from_msg(msg)

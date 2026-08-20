@@ -311,6 +311,17 @@ transit_z = max(current_z, target_z + ROS2_TRANSIT_MARGIN_MM, ROS2_LIFT_SAFE_Z_M
    - `FT_CONTINUE_ON_POINT_ERROR=1` 时跳过该点。
    - `0` 时终止执行。
 
+大腿内侧另有高位构型种子流程。`thigh_inner_posture_seed.json` 保存人工确认不会碰到
+另一条腿的 TCP 大方向、J1～J6 和 FAIRINO `ik_config`。可达性探针使用该 config，
+而不是 `-1` 参考当前关节。执行前先在原分支到达种子 TCP，记录同一 TCP 下的返回
+关节，再用 MoveJ 切入种子关节；随后 `Ros2RobotProxy.default_ik_config` 锁定该分支。
+
+配置锁定后，`MoveCart()` 会先调用 `GetInverseKin(..., config)`，把结果写入
+`JNTPoint`，再发送 `MoveL(JNT1,...)`。因此轨迹仍是笛卡尔直线，但终点关节分支是
+确定的。指定分支逆解失败会直接返回错误；MoveIt 通用 MoveJ 兜底在构型切换和锁定
+期间被禁用，避免重新选回会碰腿的分支。正常结束时先抬高并回到种子关节，再切回
+进入前记录的高位关节，然后才执行原安全位返回。
+
 ## 力传感器和软件力控
 
 ### 初始化
@@ -434,7 +445,7 @@ offset += delta_mm
 `execute_massage_sequence()`：
 
 1. 构造并进入安全位。
-2. 腿部轨迹执行可达姿态调整。
+2. 背部模式锁定已记录构型，并按悬空、最大贴近和横向分筋包络筛除不可达点；腿部轨迹执行可达姿态调整。
 3. 初始化力传感器和力控通道。
 4. 高位转场到第一个点悬空位。
 5. 遍历采样点执行点筋和分筋。
