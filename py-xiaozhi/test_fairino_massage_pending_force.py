@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import json
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from unittest import mock
 
 from src.mcp.mcp_server import Property, PropertyList, PropertyType
 from src.mcp.tools.fairino_massage.manager import FairinoMassageToolsManager
+from src.mcp.tools.fairino_massage import runtime as runtime_module
 from src.mcp.tools.fairino_massage.runtime import FairinoMassageRuntime
 
 
@@ -148,6 +150,55 @@ class PendingForceRuntimeTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["state"]["force_target_n"], 10.0)
         self.assertIsNone(result["state"]["pending_force_preset"])
+
+    def test_fresh_start_after_stop_gets_new_session_and_execution_artifacts(self):
+        self.runtime._state.update(status="stopped", session_id="old-session")
+        self.runtime._save_state_unlocked()
+
+        with mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.threading.Thread",
+            _NoopThread,
+        ), mock.patch.object(
+            runtime_module,
+            "_new_session_id",
+            return_value="new-session",
+        ), mock.patch.object(
+            runtime_module,
+            "_new_execution_id",
+            return_value="new-execution",
+        ):
+            result = asyncio.run(self.runtime.start(actions="all", target="back"))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["state"]["session_id"], "new-session")
+        self.assertEqual(result["state"]["execution_id"], "new-execution")
+        self.assertTrue(result["state"]["worker_log_path"].endswith("new-execution.log"))
+        self.assertTrue(result["state"]["worker_result_path"].endswith("new-execution.json"))
+
+    def test_cross_process_execution_lock_is_detected(self):
+        lock_path = self.root / "massage_execution.lock"
+        with mock.patch.object(runtime_module, "EXECUTION_LOCK_PATH", lock_path):
+            with lock_path.open("a+", encoding="utf-8") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertTrue(runtime_module._execution_lock_held())
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            self.assertFalse(runtime_module._execution_lock_held())
+
+    def test_timeout_termination_signals_the_worker_process_group(self):
+        proc = mock.Mock()
+        proc.wait.return_value = 0
+        with mock.patch.object(self.runtime, "_signal_worker_group") as signal_group, mock.patch.object(
+            self.runtime,
+            "_worker_target_alive",
+            return_value=False,
+        ), mock.patch.object(runtime_module.os, "getpgid", return_value=22345):
+            self.runtime._terminate_worker_group(proc, 12345)
+
+        signal_group.assert_called_once_with(
+            12345,
+            runtime_module.signal.SIGTERM,
+            pgid=22345,
+        )
 
 
 class NumberPropertyTests(unittest.TestCase):

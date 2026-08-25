@@ -1,6 +1,7 @@
 """Runtime session manager for FAIRINO trajectory-based massage."""
 
 import asyncio
+import fcntl
 import json
 import math
 import os
@@ -23,6 +24,7 @@ STATE_PATH = STATE_DIR / "current_session.json"
 CONTROL_PATH = STATE_DIR / "current_control.json"
 RESULT_DIR = STATE_DIR / "results"
 LOG_DIR = STATE_DIR / "logs"
+EXECUTION_LOCK_PATH = STATE_DIR / "massage_execution.lock"
 DETECT_RUNNER = FAIRINO_DIR / "run_ft_agent_process_env.sh"
 EXECUTE_RUNNER = FAIRINO_DIR / "run_ft_agent_process_ros2.sh"
 MASSAGE_CLI = PROJECT_ROOT / "massage"
@@ -101,7 +103,12 @@ def _now_text() -> str:
 
 
 def _new_session_id() -> str:
-    return time.strftime("ft-%Y%m%d-%H%M%S")
+    return time.strftime("ft-%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000:06d}"
+
+
+def _new_execution_id(session_id: str, resume: bool) -> str:
+    mode = "resume" if resume else "start"
+    return f"{session_id}-{mode}-{time.time_ns()}"
 
 
 def _pid_alive(pid) -> bool:
@@ -118,6 +125,18 @@ def _pid_alive(pid) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _execution_lock_held() -> bool:
+    """Check the cross-process robot execution lock without keeping it."""
+    EXECUTION_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with EXECUTION_LOCK_PATH.open("a+", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return False
 
 
 def _env_enabled(name: str, default: bool = True) -> bool:
@@ -543,6 +562,9 @@ def _empty_state() -> Dict[str, Any]:
         "message": None,
         "last_result": None,
         "stop_home_result": None,
+        "execution_id": None,
+        "worker_log_path": None,
+        "worker_result_path": None,
         "worker_pid": None,
         "updated_at": _now_text(),
     }
@@ -621,6 +643,14 @@ class FairinoMassageRuntime:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         return LOG_DIR / f"{session_id}-{operation}.log"
 
+    def _execution_artifact_paths(self, execution_id: str):
+        RESULT_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        return (
+            RESULT_DIR / f"{execution_id}.json",
+            LOG_DIR / f"{execution_id}.log",
+        )
+
     def _read_result_file(self, path: Path) -> Dict[str, Any]:
         with Path(path).open("r", encoding="utf-8") as f:
             return _jsonable(json.load(f))
@@ -637,7 +667,59 @@ class FairinoMassageRuntime:
             return True
         if self._worker_process is not None and self._worker_process.poll() is None:
             return True
-        return _pid_alive(self._state.get("worker_pid"))
+        if _pid_alive(self._state.get("worker_pid")):
+            return True
+        return _execution_lock_held()
+
+    @staticmethod
+    def _signal_worker_group(pid, sig, pgid=None):
+        pid = int(pid)
+        pgid = os.getpgid(pid) if pgid is None else int(pgid)
+        if pgid == os.getpgrp():
+            os.kill(pid, sig)
+        else:
+            os.killpg(pgid, sig)
+
+    @staticmethod
+    def _worker_target_alive(pid, pgid):
+        if int(pgid) == os.getpgrp():
+            return _pid_alive(pid)
+        try:
+            os.killpg(int(pgid), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _terminate_worker_group(self, proc, pid):
+        if pid is None:
+            return
+        try:
+            pgid = os.getpgid(int(pid))
+            self._signal_worker_group(pid, signal.SIGTERM, pgid=pgid)
+        except ProcessLookupError:
+            return
+        except Exception as exc:
+            logger.warning(f"[FairinoMassage] failed to terminate worker group pid={pid}: {exc}")
+            return
+
+        if proc is not None:
+            try:
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                pass
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and self._worker_target_alive(pid, pgid):
+            time.sleep(0.1)
+
+        if self._worker_target_alive(pid, pgid):
+            try:
+                self._signal_worker_group(pid, signal.SIGKILL, pgid=pgid)
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                logger.warning(f"[FairinoMassage] failed to kill worker group pid={pid}: {exc}")
 
     def _cleanup_detect_display_process_unlocked(self):
         proc = self._detect_display_process
@@ -662,7 +744,8 @@ class FairinoMassageRuntime:
                 pid = proc.pid if proc is not None else self._state.get("worker_pid")
                 proc_alive = proc is not None and proc.poll() is None
                 pid_alive = proc_alive or (proc is None and _pid_alive(pid))
-            if not thread_alive and not pid_alive:
+                execution_lock_held = _execution_lock_held()
+            if not thread_alive and not pid_alive and not execution_lock_held:
                 return True
             time.sleep(0.2)
 
@@ -670,22 +753,9 @@ class FairinoMassageRuntime:
             proc = self._worker_process
             pid = proc.pid if proc is not None else self._state.get("worker_pid")
 
-        if proc is not None and proc.poll() is None:
-            logger.warning("[FairinoMassage] stop wait timeout, terminating worker process")
-            proc.terminate()
-            try:
-                proc.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        elif pid is not None and _pid_alive(pid):
-            logger.warning(f"[FairinoMassage] stop wait timeout, terminating worker pid={pid}")
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-                time.sleep(1.0)
-                if _pid_alive(pid):
-                    os.kill(int(pid), signal.SIGKILL)
-            except Exception as exc:
-                logger.warning(f"[FairinoMassage] failed to terminate worker pid={pid}: {exc}")
+        if pid is not None and _pid_alive(pid):
+            logger.warning(f"[FairinoMassage] stop wait timeout, terminating worker process group pid={pid}")
+            self._terminate_worker_group(proc, pid)
         return False
 
     def _return_robot_home(self) -> Dict[str, Any]:
@@ -1334,7 +1404,16 @@ class FairinoMassageRuntime:
                 start_action = ""
                 start_repeat_index = 0
                 start_step_index = 0
-                session_id = state.get("session_id") or _new_session_id()
+                session_id = (
+                    state.get("session_id")
+                    if state.get("status") == "detected"
+                    else _new_session_id()
+                )
+
+            execution_id = _new_execution_id(session_id, resume)
+            worker_result_path, worker_log_path = self._execution_artifact_paths(
+                execution_id
+            )
 
             pending_force_preset = state.get("pending_force_preset")
             pending_force_applied = bool(
@@ -1419,6 +1498,9 @@ class FairinoMassageRuntime:
                 resume_repeat_index=start_repeat_index,
                 resume_step_index=start_step_index,
                 message=state_message,
+                execution_id=execution_id,
+                worker_log_path=str(worker_log_path),
+                worker_result_path=str(worker_result_path),
             )
             self._save_state_unlocked()
 
@@ -1440,6 +1522,7 @@ class FairinoMassageRuntime:
                     start_action,
                     start_repeat_index,
                     start_step_index,
+                    execution_id,
                 ),
                 daemon=True,
                 name="fairino-massage-worker",
@@ -1467,10 +1550,11 @@ class FairinoMassageRuntime:
         start_action: str,
         start_repeat_index: int,
         start_step_index: int,
+        execution_id: str,
     ):
+        proc = None
         try:
-            result_path = self._result_path(session_id, "execute")
-            log_path = self._log_path(session_id, "execute")
+            result_path, log_path = self._execution_artifact_paths(execution_id)
             if result_path.exists():
                 result_path.unlink()
 
@@ -1480,6 +1564,8 @@ class FairinoMassageRuntime:
                 "execute",
                 "--session-id",
                 session_id,
+                "--execution-id",
+                execution_id,
                 "--target",
                 target,
                 "--trajectory-path",
@@ -1518,6 +1604,7 @@ class FairinoMassageRuntime:
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    start_new_session=True,
                 )
                 with self._lock:
                     self._worker_process = proc
@@ -1526,19 +1613,34 @@ class FairinoMassageRuntime:
                 returncode = proc.wait()
 
             if not result_path.exists():
-                self._update_state(
-                    status="error",
-                    message="机器人按摩进程没有返回结果",
-                    last_result={
-                        "error": "missing result file",
-                        "returncode": returncode,
-                        "log_path": str(log_path),
-                        "log_tail": self._read_log_tail(log_path),
-                    },
-                )
+                if returncode == 75:
+                    missing_result_message = "已有另一个按摩执行进程持有机器人控制锁"
+                else:
+                    missing_result_message = "机器人按摩进程没有返回结果"
+                with self._lock:
+                    self._refresh_state_from_disk_unlocked()
+                    if (
+                        self._state.get("session_id") == session_id
+                        and self._state.get("execution_id") == execution_id
+                    ):
+                        self._state.update(
+                            status="error",
+                            message=missing_result_message,
+                            last_result={
+                                "error": "missing result file",
+                                "message": missing_result_message,
+                                "returncode": returncode,
+                                "execution_id": execution_id,
+                                "log_path": str(log_path),
+                                "log_tail": self._read_log_tail(log_path),
+                            },
+                        )
+                        self._save_state_unlocked()
                 return
 
             result = self._read_result_file(result_path)
+            result["execution_id"] = execution_id
+            result["log_path"] = str(log_path)
             if returncode != 0:
                 result.update(
                     process_returncode=returncode,
@@ -1548,6 +1650,16 @@ class FairinoMassageRuntime:
 
             with self._lock:
                 self._refresh_state_from_disk_unlocked()
+                if (
+                    self._state.get("session_id") != session_id
+                    or self._state.get("execution_id") != execution_id
+                ):
+                    logger.warning(
+                        "[FairinoMassage] ignore stale worker result: session=%s execution=%s",
+                        session_id,
+                        execution_id,
+                    )
+                    return
                 self._state["last_result"] = _jsonable(result)
                 self._save_state_unlocked()
 
@@ -1641,10 +1753,19 @@ class FairinoMassageRuntime:
             )
         finally:
             with self._lock:
-                self._worker_process = None
+                if self._worker_process is proc:
+                    self._worker_process = None
                 self._refresh_state_from_disk_unlocked()
-                self._state["worker_pid"] = None
-                self._save_state_unlocked()
+                if (
+                    self._state.get("session_id") == session_id
+                    and self._state.get("execution_id") == execution_id
+                    and (
+                        proc is None
+                        or self._state.get("worker_pid") in {None, proc.pid}
+                    )
+                ):
+                    self._state["worker_pid"] = None
+                    self._save_state_unlocked()
 
     async def pause(self) -> Dict[str, Any]:
         with self._lock:

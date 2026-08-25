@@ -186,9 +186,10 @@ def detect_pose(
     hip_score = float(scores[hip_i])
     knee_score = float(scores[knee_i])
     if hip_score < kpt_thr or knee_score < kpt_thr:
+        side_label = "左" if side == "left" else "右"
         return PoseSelection(
             False,
-            f"髋/膝关键点置信度不足 hip={hip_score:.2f}, knee={knee_score:.2f}",
+            f"目标{side_label}腿髋/膝关键点置信度不足 hip={hip_score:.2f}, knee={knee_score:.2f}",
             keypoints=keypoints,
             scores=scores,
             side=side,
@@ -385,6 +386,7 @@ def save_confirmation(
     record = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "side": selection.side,
+        "rotation": selection.rotation,
         "offset_mm": float(offset_mm),
         "line_shift_mm": float(line_shift_mm),
         "flip_outside": bool(flip),

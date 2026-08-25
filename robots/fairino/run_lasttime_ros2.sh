@@ -311,4 +311,8 @@ if [[ ! -f "${SCRIPT_DIR}/${LASTTIME_ROS2_SCRIPT}" ]]; then
   exit 1
 fi
 
-"${PYTHON_BIN}" "${LASTTIME_ROS2_SCRIPT}" "$@"
+FT_AGENT_EXECUTION_LOCK_FILE="${FT_AGENT_EXECUTION_LOCK_FILE:-${SCRIPT_DIR}/ft_agent_state/massage_execution.lock}"
+mkdir -p "$(dirname "${FT_AGENT_EXECUTION_LOCK_FILE}")"
+exec flock --exclusive --nonblock --conflict-exit-code 75 --no-fork \
+  "${FT_AGENT_EXECUTION_LOCK_FILE}" \
+  "${PYTHON_BIN}" "${LASTTIME_ROS2_SCRIPT}" "$@"

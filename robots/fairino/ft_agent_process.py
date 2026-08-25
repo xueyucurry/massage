@@ -46,6 +46,7 @@ def _empty_state():
         "session_force_override_active": False,
         "message": None,
         "last_result": None,
+        "execution_id": None,
         "worker_pid": None,
         "updated_at": _now_text(),
     }
@@ -92,12 +93,23 @@ def _atomic_write_json(path, data):
     tmp_path.replace(path)
 
 
-def _update_state(state_path, session_id, **updates):
+def _update_state(state_path, session_id, execution_id=None, **updates):
     state = _read_json(state_path, _empty_state()) or _empty_state()
+    current_session_id = state.get("session_id")
+    if current_session_id not in {None, "", session_id}:
+        return state
+    current_execution_id = state.get("execution_id")
+    if (
+        execution_id
+        and current_execution_id not in {None, "", execution_id}
+    ):
+        return state
     base = _empty_state()
     base.update(state)
     base.update(_jsonable(updates))
     base["session_id"] = session_id
+    if execution_id:
+        base["execution_id"] = execution_id
     base["updated_at"] = _now_text()
     _atomic_write_json(state_path, base)
     return base
@@ -110,8 +122,9 @@ def _write_result(result_path, result):
 
 
 class FileExecutionControl:
-    def __init__(self, session_id, state_path, control_path):
+    def __init__(self, session_id, execution_id, state_path, control_path):
         self.session_id = session_id
+        self.execution_id = execution_id
         self.state_path = Path(state_path)
         self.control_path = Path(control_path)
         self._last_force_adjust_seq = None
@@ -180,12 +193,19 @@ class FileExecutionControl:
                 robot_tcp_pose=(checkpoint.get("robot_state") or {}).get("tcp_pose"),
                 robot_joints_deg=(checkpoint.get("robot_state") or {}).get("joints_deg"),
             )
-        _update_state(self.state_path, self.session_id, **updates)
+        _update_state(
+            self.state_path,
+            self.session_id,
+            execution_id=self.execution_id,
+            **updates,
+        )
 
     def checkpoint(self, checkpoint):
         checkpoint = _jsonable(checkpoint or {})
         state = _read_json(self.state_path, _empty_state()) or _empty_state()
         if state.get("session_id") not in {None, "", self.session_id}:
+            return "stop"
+        if state.get("execution_id") not in {None, "", self.execution_id}:
             return "stop"
 
         robot_state = checkpoint.get("robot_state") or {}
@@ -219,24 +239,24 @@ class FileExecutionControl:
         if request in {"stop", "stopped"}:
             if not checkpoint.get("safe_to_pause", True):
                 updates.update(status="stopping", message="已收到停止请求，先回当前点悬空位")
-                _update_state(self.state_path, self.session_id, **updates)
+                _update_state(self.state_path, self.session_id, execution_id=self.execution_id, **updates)
                 return "stop_pending"
             updates.update(status="stopped", message="按摩已停止")
-            _update_state(self.state_path, self.session_id, **updates)
+            _update_state(self.state_path, self.session_id, execution_id=self.execution_id, **updates)
             return "stop"
 
         if request in {"pause", "paused"}:
             if checkpoint.get("safe_to_pause", True):
                 updates.update(status="paused", message="按摩已暂停")
-                _update_state(self.state_path, self.session_id, **updates)
+                _update_state(self.state_path, self.session_id, execution_id=self.execution_id, **updates)
                 return "pause"
             updates.update(status="pausing", message="已收到暂停请求，等待安全检查点")
-            _update_state(self.state_path, self.session_id, **updates)
+            _update_state(self.state_path, self.session_id, execution_id=self.execution_id, **updates)
             return "pause_pending"
 
         force_adjustment = self._force_adjustment_from_control(control, state)
         updates.update(status="running")
-        _update_state(self.state_path, self.session_id, **updates)
+        _update_state(self.state_path, self.session_id, execution_id=self.execution_id, **updates)
         if force_adjustment:
             return {"request": "continue", "force_adjustment": force_adjustment}
         return "continue"
@@ -407,6 +427,7 @@ def run_execute(args):
             _update_state(
                 args.state_path,
                 args.session_id,
+                execution_id=args.execution_id,
                 status="error",
                 message=load_result.get("error") or "轨迹加载失败",
                 last_result=result,
@@ -422,6 +443,7 @@ def run_execute(args):
         _update_state(
             args.state_path,
             args.session_id,
+            execution_id=args.execution_id,
             status="running",
             target=target,
             target_label=load_result.get("target_label"),
@@ -442,7 +464,12 @@ def run_execute(args):
             message="正在执行按摩动作",
         )
 
-        control = FileExecutionControl(args.session_id, args.state_path, args.control_path)
+        control = FileExecutionControl(
+            args.session_id,
+            args.execution_id,
+            args.state_path,
+            args.control_path,
+        )
         execute_result = api.execute_actions(
             actions=args.actions,
             control=control,
@@ -465,6 +492,7 @@ def run_execute(args):
             _update_state(
                 args.state_path,
                 args.session_id,
+                execution_id=args.execution_id,
                 status="paused",
                 message="按摩已暂停",
                 last_result=result,
@@ -473,6 +501,7 @@ def run_execute(args):
             _update_state(
                 args.state_path,
                 args.session_id,
+                execution_id=args.execution_id,
                 status="stopped",
                 message="按摩已停止",
                 last_result=result,
@@ -481,6 +510,7 @@ def run_execute(args):
             _update_state(
                 args.state_path,
                 args.session_id,
+                execution_id=args.execution_id,
                 status="stopped",
                 stage="completed",
                 current_action="completed",
@@ -499,6 +529,7 @@ def run_execute(args):
             _update_state(
                 args.state_path,
                 args.session_id,
+                execution_id=args.execution_id,
                 status="error",
                 message=report.get("error") or execute_result.get("error") or "按摩动作执行失败",
                 last_result=result,
@@ -516,6 +547,7 @@ def run_execute(args):
         _update_state(
             args.state_path,
             args.session_id,
+            execution_id=args.execution_id,
             status="error",
             message=str(exc),
             last_result=result,
@@ -545,6 +577,7 @@ def build_parser():
 
     execute = sub.add_parser("execute")
     execute.add_argument("--session-id", required=True)
+    execute.add_argument("--execution-id", default="")
     execute.add_argument("--target", default="auto")
     execute.add_argument("--trajectory-path", required=True)
     execute.add_argument("--actions", default="all")
@@ -565,6 +598,8 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "execute" and not args.execution_id:
+        args.execution_id = f"{args.session_id}-direct"
 
     if args.command == "detect":
         result = run_detect(args)

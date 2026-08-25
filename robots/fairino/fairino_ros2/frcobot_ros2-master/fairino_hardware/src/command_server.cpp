@@ -1913,6 +1913,277 @@ std::string robot_command_thread::ServoCartSmooth(std::string para){
 
 
 /**
+ * @brief 在一次伺服会话内完成整套连续分筋，并沿接触法向补偿目标压力。
+ * @param [in] para -
+ *   split_x,split_y,split_z,normal_x,normal_y,normal_z,
+ *   amplitude_mm,repeat_count,cycle_s,frequency_hz,force_axis_sign,target_force_n,
+ *   force_tolerance_n,normal_kp_mm_per_n_s,normal_max_speed_mm_s,
+ *   normal_min_correction_mm,normal_max_correction_mm,force_filter_alpha,
+ *   normal_limit_n,tangent_limit_n,torque_limit_nm
+ *
+ * 整套路径为 center -> +amplitude -> -amplitude -> +amplitude -> ... ->
+ * -amplitude。所有轮次共享 ServoMoveStart/ServoMoveEnd；中点只被高速穿过，
+ * 正负换向点采用加速度连续的曲线立即反向，不插入任何中心驻留或中心收尾。
+ * 返回：ret,status,normal_correction_mm,elapsed_s,fx,fy,fz,tx,ty,tz
+ */
+std::string robot_command_thread::ServoCartForceFenJin(std::string para){
+    std::vector<std::string> values;
+    _splitString2Vec(para,values);
+    if(values.size() != 21){
+        throw std::logic_error("ServoCartForceFenJin expects 21 parameters");
+    }
+
+    double split_axis[3] = {
+        std::stod(values[0]),std::stod(values[1]),std::stod(values[2]),
+    };
+    double normal_axis[3] = {
+        std::stod(values[3]),std::stod(values[4]),std::stod(values[5]),
+    };
+    const double amplitude_mm = std::stod(values[6]);
+    const double repeat_count_value = std::stod(values[7]);
+    const int repeat_count = static_cast<int>(repeat_count_value);
+    const double cycle_s = std::stod(values[8]);
+    const double frequency_hz = std::stod(values[9]);
+    const double force_axis_sign = std::stod(values[10]);
+    const double target_force_n = std::stod(values[11]);
+    const double force_tolerance_n = std::stod(values[12]);
+    const double normal_kp_mm_per_n_s = std::stod(values[13]);
+    const double normal_max_speed_mm_s = std::stod(values[14]);
+    const double normal_min_correction_mm = std::stod(values[15]);
+    const double normal_max_correction_mm = std::stod(values[16]);
+    const double force_filter_alpha = std::stod(values[17]);
+    const double normal_limit_n = std::stod(values[18]);
+    const double tangent_limit_n = std::stod(values[19]);
+    const double torque_limit_nm = std::stod(values[20]);
+
+    const double numeric_values[] = {
+        split_axis[0],split_axis[1],split_axis[2],
+        normal_axis[0],normal_axis[1],normal_axis[2],
+        amplitude_mm,repeat_count_value,cycle_s,frequency_hz,force_axis_sign,target_force_n,
+        force_tolerance_n,normal_kp_mm_per_n_s,normal_max_speed_mm_s,
+        normal_min_correction_mm,normal_max_correction_mm,force_filter_alpha,
+        normal_limit_n,tangent_limit_n,torque_limit_nm,
+    };
+    if(std::any_of(std::begin(numeric_values),std::end(numeric_values),[](double value){
+           return !std::isfinite(value);
+       }) ||
+       amplitude_mm <= 0.0 || amplitude_mm > 50.0 ||
+       repeat_count < 1 || repeat_count > 100 ||
+       std::abs(repeat_count_value - static_cast<double>(repeat_count)) > 1e-9 ||
+       cycle_s < 0.3 || cycle_s > 10.0 ||
+       frequency_hz < 62.5 || frequency_hz > 250.0 ||
+       std::abs(std::abs(force_axis_sign) - 1.0) > 1e-6 ||
+       target_force_n <= 0.0 || target_force_n > 200.0 ||
+       force_tolerance_n < 0.0 || force_tolerance_n > target_force_n ||
+       normal_kp_mm_per_n_s < 0.0 || normal_kp_mm_per_n_s > 10.0 ||
+       normal_max_speed_mm_s <= 0.0 || normal_max_speed_mm_s > 50.0 ||
+       normal_min_correction_mm > 0.0 || normal_min_correction_mm < -50.0 ||
+       normal_max_correction_mm < 0.0 || normal_max_correction_mm > 50.0 ||
+       normal_min_correction_mm > normal_max_correction_mm ||
+       force_filter_alpha <= 0.0 || force_filter_alpha > 1.0 ||
+       normal_limit_n <= target_force_n || normal_limit_n > 500.0 ||
+       tangent_limit_n <= 0.0 || tangent_limit_n > 500.0 ||
+       torque_limit_nm <= 0.0 || torque_limit_nm > 50.0){
+        throw std::out_of_range("invalid continuous fen-jin parameter");
+    }
+
+    auto normalize_axis = [](double axis[3]){
+        const double norm = std::sqrt(
+            axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]
+        );
+        if(!std::isfinite(norm) || norm < 1e-6){
+            return false;
+        }
+        for(int index = 0; index < 3; ++index){
+            axis[index] /= norm;
+        }
+        return true;
+    };
+    if(!normalize_axis(normal_axis) || !normalize_axis(split_axis)){
+        throw std::out_of_range("invalid continuous fen-jin axis");
+    }
+    const double split_normal_dot =
+        split_axis[0] * normal_axis[0]
+        + split_axis[1] * normal_axis[1]
+        + split_axis[2] * normal_axis[2];
+    for(int index = 0; index < 3; ++index){
+        split_axis[index] -= split_normal_dot * normal_axis[index];
+    }
+    if(!normalize_axis(split_axis)){
+        throw std::out_of_range("fen-jin split axis is parallel to contact normal");
+    }
+
+    DescPose center;
+    int ret = _ptr_robot->GetActualTCPPose(0,&center);
+    if(ret != 0){
+        return std::to_string(ret);
+    }
+
+    ForceTorque last_force{};
+    double normal_correction_mm = 0.0;
+    const auto command_start_time = std::chrono::steady_clock::now();
+    auto elapsed_s = [&](){
+        return std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - command_start_time
+        ).count();
+    };
+    auto response = [&](int code, int status){
+        std::ostringstream stream;
+        stream << std::fixed << std::setprecision(6)
+               << code << "," << status << "," << normal_correction_mm << "," << elapsed_s()
+               << "," << last_force.fx << "," << last_force.fy << "," << last_force.fz
+               << "," << last_force.tx << "," << last_force.ty << "," << last_force.tz;
+        return stream.str();
+    };
+    auto safety_code = [&](const ForceTorque& force){
+        const double samples[] = {
+            force.fx,force.fy,force.fz,force.tx,force.ty,force.tz,
+        };
+        if(std::any_of(std::begin(samples),std::end(samples),[](double value){
+               return !std::isfinite(value);
+           })){
+            return -2304;
+        }
+        if(std::abs(force.fz) > normal_limit_n){
+            return -2301;
+        }
+        if(std::hypot(force.fx,force.fy) > tangent_limit_n){
+            return -2302;
+        }
+        if(std::max({std::abs(force.tx),std::abs(force.ty),std::abs(force.tz)}) > torque_limit_nm){
+            return -2303;
+        }
+        return 0;
+    };
+
+    ret = _ptr_robot->FT_GetForceTorqueRCS(1,&last_force);
+    if(ret != 0){
+        return response(-2304,-1);
+    }
+    int limit_code = safety_code(last_force);
+    if(limit_code != 0){
+        _ptr_robot->StopMotion();
+        return response(limit_code,-1);
+    }
+
+    ret = _ptr_robot->ServoMoveStart();
+    if(ret != 0){
+        return response(ret,-1);
+    }
+
+    const double period_s = 1.0 / frequency_hz;
+    const int segment_count = repeat_count * 2;
+    // Preserve cycle_s per requested round after deleting the old final
+    // -amplitude -> center quarter segment. Scaling all remaining segments by
+    // the same factor keeps velocity/acceleration continuity at every endpoint.
+    const double duration_scale = static_cast<double>(repeat_count)
+        / (static_cast<double>(repeat_count) - 0.25);
+    const double first_segment_s = cycle_s * 0.25 * duration_scale;
+    const double sweep_segment_s = cycle_s * 0.5 * duration_scale;
+    // The first segment starts softly at center. Its endpoint acceleration
+    // matches the following half-cosine, so every +/- reversal is immediate.
+    const double reversal_accel = -(M_PI * M_PI) / 4.0;
+    const double outer_a3 = 10.0 + reversal_accel / 2.0;
+    const double outer_a4 = -15.0 - reversal_accel;
+    const double outer_a5 = 6.0 + reversal_accel / 2.0;
+    float pos_gain[6] = {1.0f,1.0f,1.0f,1.0f,1.0f,1.0f};
+    double filtered_press_n = std::max(0.0,force_axis_sign * last_force.fz);
+    double segment_start_mm = 0.0;
+    int global_step = 0;
+    int result_code = 0;
+    int result_status = 1;
+    const auto servo_start_time = std::chrono::steady_clock::now();
+
+    auto send_sample = [&](double lateral_mm){
+        ret = _ptr_robot->FT_GetForceTorqueRCS(1,&last_force);
+        if(ret != 0){
+            return -2304;
+        }
+        const int sample_limit_code = safety_code(last_force);
+        if(sample_limit_code != 0){
+            return sample_limit_code;
+        }
+
+        const double raw_press_n = std::max(0.0,force_axis_sign * last_force.fz);
+        filtered_press_n = force_filter_alpha * raw_press_n
+            + (1.0 - force_filter_alpha) * filtered_press_n;
+        const double force_error_n = target_force_n - filtered_press_n;
+        double normal_speed_mm_s = 0.0;
+        if(std::abs(force_error_n) > force_tolerance_n){
+            normal_speed_mm_s = std::clamp(
+                normal_kp_mm_per_n_s * force_error_n,
+                -normal_max_speed_mm_s,
+                normal_max_speed_mm_s
+            );
+        }
+        normal_correction_mm = std::clamp(
+            normal_correction_mm + normal_speed_mm_s * period_s,
+            normal_min_correction_mm,
+            normal_max_correction_mm
+        );
+
+        DescPose command = center;
+        command.tran.x += split_axis[0] * lateral_mm
+            + normal_axis[0] * normal_correction_mm;
+        command.tran.y += split_axis[1] * lateral_mm
+            + normal_axis[1] * normal_correction_mm;
+        command.tran.z += split_axis[2] * lateral_mm
+            + normal_axis[2] * normal_correction_mm;
+        return _ptr_robot->ServoCart(
+            0,&command,pos_gain,0.0f,0.0f,
+            static_cast<float>(period_s),0.0f,0.0f
+        );
+    };
+
+    for(int segment = 0; segment < segment_count && result_code == 0; ++segment){
+        const double segment_target_mm = segment % 2 == 0
+            ? amplitude_mm
+            : -amplitude_mm;
+        const double segment_duration_s = segment == 0
+            ? first_segment_s
+            : sweep_segment_s;
+        const int step_count = std::max(
+            4,
+            static_cast<int>(std::ceil(segment_duration_s * frequency_hz))
+        );
+        for(int step = 1; step <= step_count; ++step){
+            const double u = static_cast<double>(step) / static_cast<double>(step_count);
+            double blend = 0.0;
+            if(segment == 0){
+                blend = u * u * u * (outer_a3 + u * (outer_a4 + outer_a5 * u));
+            }else{
+                blend = 0.5 * (1.0 - std::cos(M_PI * u));
+            }
+            const double lateral_mm = segment_start_mm
+                + (segment_target_mm - segment_start_mm) * blend;
+            result_code = send_sample(lateral_mm);
+            if(result_code != 0){
+                result_status = -1;
+                break;
+            }
+            ++global_step;
+            const auto deadline = servo_start_time
+                + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(static_cast<double>(global_step) * period_s)
+                );
+            std::this_thread::sleep_until(deadline);
+        }
+        segment_start_mm = segment_target_mm;
+    }
+
+    const int end_ret = _ptr_robot->ServoMoveEnd();
+    if(result_code == 0 && end_ret != 0){
+        result_code = end_ret;
+        result_status = -1;
+    }
+    if(result_code != 0){
+        _ptr_robot->StopMotion();
+    }
+    return response(result_code,result_status);
+}
+
+
+/**
  * @brief 在一次伺服会话内沿直线连续贴近，并用工具坐标系 Fz 停止运动。
  * @param [in] para -
  *   x,y,z,rx,ry,rz,frequency_hz,force_axis_sign,target_force_n,

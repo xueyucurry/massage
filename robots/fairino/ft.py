@@ -26,7 +26,7 @@ THIGH_INNER_MASSAGE_FORCE_N = "30.0"   # 大腿内侧
 # ===== 用户常改：动作次数和速度 =====
 DIAN_JIN_REPEAT_DEFAULT = "3"           # 每个按摩点执行点筋次数
 FEN_JIN_REPEAT_DEFAULT = "3"            # 每个按摩点执行分筋次数
-DIAN_JIN_MODE_DEFAULT = "dian"           # 默认执行真正点筋；small_fen 仅作显式兼容模式
+DIAN_JIN_MODE_DEFAULT = "small_fen"       # 点筋默认用小幅上下拨动；每轮仍独立贴近/抬起
 ROBOT_MOTION_SPEED_SCALE_DEFAULT = "2.0"  # 所有机械臂运动速度倍率
 SHUN_JIN_MOTION_SPEED_SCALE_DEFAULT = "1.0" # 顺筋动作速度倍率，1.0 为原速
 
@@ -192,6 +192,10 @@ ROS2_TRANSIT_MARGIN_MM = float(os.environ.get("ROS2_TRANSIT_MARGIN_MM", "80.0"))
 ROS2_SEGMENT_MAX_STEP_MM = float(os.environ.get("ROS2_SEGMENT_MAX_STEP_MM", "50.0"))
 ROS2_SEGMENT_MAX_STEPS = int(os.environ.get("ROS2_SEGMENT_MAX_STEPS", "0"))
 ROS2_SEGMENT_TIMEOUT_S = float(os.environ.get("ROS2_SEGMENT_TIMEOUT_S", "180.0"))
+ROS2_HOVER_DIRECT_MAX_DISTANCE_MM = max(
+    0.0,
+    float(os.environ.get("ROS2_HOVER_DIRECT_MAX_DISTANCE_MM", "80.0")),
+)
 ROS2_TRANSIT_LIFT_FIRST = os.environ.get("ROS2_TRANSIT_LIFT_FIRST", "1").strip().lower() in {
     "1",
     "true",
@@ -288,6 +292,14 @@ BACK_POSTURE_SEED_ENABLE = os.environ.get(
     "yes",
     "on",
 }
+BACK_FOLLOW_LOCAL_NORMAL = os.environ.get(
+    "BACK_FOLLOW_LOCAL_NORMAL", "1"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 BACK_POSTURE_SEED_FILE = Path(
     os.environ.get(
         "BACK_POSTURE_SEED_FILE",
@@ -314,6 +326,34 @@ BACK_TRAJECTORY_PROBE_VEL = max(
     float(os.environ.get("BACK_TRAJECTORY_PROBE_VEL", "10.0")),
 )
 BACK_MIN_DEPTH_RATIO = float(os.environ.get("BACK_MIN_DEPTH_RATIO", "0.50"))
+BACK_TRAJECTORY_MAX_DEPTH_STD_MM = max(
+    0.0,
+    float(os.environ.get("BACK_TRAJECTORY_MAX_DEPTH_STD_MM", "25.0")),
+)
+BACK_TRAJECTORY_MAX_PATCH_RANGE_MM = max(
+    0.0,
+    float(os.environ.get("BACK_TRAJECTORY_MAX_PATCH_RANGE_MM", "80.0")),
+)
+BACK_TRAJECTORY_MAX_DEPTH_JUMP_M = max(
+    0.0,
+    float(os.environ.get("BACK_TRAJECTORY_MAX_DEPTH_JUMP_M", "0.12")),
+)
+BACK_TRAJECTORY_MAX_POINT_GAP_MM = max(
+    0.0,
+    float(os.environ.get("BACK_TRAJECTORY_MAX_POINT_GAP_MM", "90.0")),
+)
+BACK_TRAJECTORY_GAP_MEDIAN_MULTIPLIER = max(
+    1.0,
+    float(os.environ.get("BACK_TRAJECTORY_GAP_MEDIAN_MULTIPLIER", "2.5")),
+)
+BACK_TRAJECTORY_MIN_RETAIN_RATIO = min(
+    1.0,
+    max(0.0, float(os.environ.get("BACK_TRAJECTORY_MIN_RETAIN_RATIO", "0.60"))),
+)
+BACK_TRAJECTORY_MIN_POINTS = max(
+    1,
+    int(os.environ.get("BACK_TRAJECTORY_MIN_POINTS", "3")),
+)
 BACK_MIN_LINE_LENGTH_PX = float(
     os.environ.get("BACK_MIN_LINE_LENGTH_PX", "220.0")
 )
@@ -561,6 +601,49 @@ FORCE_CONTINUOUS_TIMEOUT_S = max(
     1.0,
     min(30.0, float(os.environ.get("FT_CONTINUOUS_FORCE_TIMEOUT_S", "20.0"))),
 )
+FORCE_CONTINUOUS_FEN_ENABLE = os.environ.get(
+    "FT_CONTINUOUS_FEN_JIN", "1"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+FORCE_CONTINUOUS_FEN_CYCLE_S = max(
+    0.3,
+    min(10.0, float(os.environ.get("FT_CONTINUOUS_FEN_CYCLE_S", "1.0"))),
+)
+FORCE_CONTINUOUS_FEN_HZ = max(
+    62.5,
+    min(
+        250.0,
+        float(os.environ.get("FT_CONTINUOUS_FEN_HZ", str(ROS2_SERVO_INTERPOLATION_HZ))),
+    ),
+)
+FORCE_CONTINUOUS_FEN_NORMAL_KP_MM_PER_N_S = max(
+    0.0,
+    min(
+        10.0,
+        float(
+            os.environ.get(
+                "FT_CONTINUOUS_FEN_NORMAL_KP_MM_PER_N_S",
+                str(max(0.0, FORCE_HOLD_KP_MM_PER_N) * max(1.0, FORCE_MONITOR_HZ)),
+            )
+        ),
+    ),
+)
+FORCE_CONTINUOUS_FEN_NORMAL_MAX_SPEED_MM_S = max(
+    0.01,
+    min(
+        50.0,
+        float(
+            os.environ.get(
+                "FT_CONTINUOUS_FEN_NORMAL_MAX_SPEED_MM_S",
+                str(max(0.01, FORCE_HOLD_MAX_STEP_MM) * max(1.0, FORCE_MONITOR_HZ)),
+            )
+        ),
+    ),
+)
 FORCE_RELEASE_LIMIT_N = float(
     os.environ.get("LASTTIME_FORCE_RELEASE_LIMIT_N", "5.0")
 )
@@ -569,9 +652,30 @@ LIVE_FORCE_TARGET_MIN_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MIN_N", "1.
 LIVE_FORCE_TARGET_MAX_N = float(os.environ.get("FT_LIVE_FORCE_TARGET_MAX_N", "80.0"))
 
 MASSAGE_TARGET_ENV = os.environ.get("MASSAGE_TARGET", "").strip().lower()
-THIGH_SIDE = os.environ.get("THIGH_SIDE", "right").strip().lower()
-if THIGH_SIDE not in {"nearest", "auto", "left", "right"}:
-    THIGH_SIDE = "right"
+THIGH_SIDE_MODES = {"nearest", "auto", "left", "right"}
+
+
+def _configured_thigh_side(name, fallback=None):
+    value = os.environ.get(name, "").strip().lower()
+    if value in THIGH_SIDE_MODES:
+        return value
+    return fallback
+
+
+# THIGH_SIDE is retained as a legacy override for both targets.  Without that
+# override, the treatment setup uses the right leg for the outer target and the
+# left leg for the inner target, so a more visible right leg cannot steal an
+# inner-thigh detection.
+_LEGACY_THIGH_SIDE = _configured_thigh_side("THIGH_SIDE")
+THIGH_OUTER_SIDE = _configured_thigh_side(
+    "THIGH_OUTER_SIDE",
+    _LEGACY_THIGH_SIDE or "right",
+)
+THIGH_INNER_SIDE = _configured_thigh_side(
+    "THIGH_INNER_SIDE",
+    _LEGACY_THIGH_SIDE or "left",
+)
+THIGH_SIDE = _LEGACY_THIGH_SIDE or THIGH_OUTER_SIDE
 THIGH_OFFSET_MM = float(os.environ.get("THIGH_OFFSET_MM", "25.0"))
 THIGH_LINE_SHIFT_MM = float(os.environ.get("THIGH_LINE_SHIFT_MM", "0.0"))
 THIGH_OUTER_OFFSET_MM = float(os.environ.get("THIGH_OUTER_OFFSET_MM", THIGH_OFFSET_MM))
@@ -596,15 +700,35 @@ THIGH_WIDTH = int(os.environ.get("THIGH_CAMERA_WIDTH", "640"))
 THIGH_HEIGHT = int(os.environ.get("THIGH_CAMERA_HEIGHT", "480"))
 THIGH_FPS = int(os.environ.get("THIGH_CAMERA_FPS", "30"))
 THIGH_DEVICE = os.environ.get("THIGH_DEVICE", "auto").strip()
-THIGH_ROTATION = os.environ.get("THIGH_ROTATION", "none").strip().lower()
-if THIGH_ROTATION not in ROTATIONS:
-    THIGH_ROTATION = "none"
+_LEGACY_THIGH_ROTATION = os.environ.get("THIGH_ROTATION", "").strip().lower()
+THIGH_ROTATION = _LEGACY_THIGH_ROTATION if _LEGACY_THIGH_ROTATION in ROTATIONS else "none"
+THIGH_OUTER_ROTATION = os.environ.get("THIGH_OUTER_ROTATION", THIGH_ROTATION).strip().lower()
+if THIGH_OUTER_ROTATION not in ROTATIONS:
+    THIGH_OUTER_ROTATION = THIGH_ROTATION
+# A person lying across the camera frame is upright in the RTMPose input after
+# a clockwise rotation.  The raised/partly occluded inner leg is otherwise the
+# first keypoint pair to lose confidence, while the foreground leg remains easy
+# to detect.  Keep the established outer-leg default unchanged.
+THIGH_INNER_ROTATION = os.environ.get(
+    "THIGH_INNER_ROTATION",
+    _LEGACY_THIGH_ROTATION if _LEGACY_THIGH_ROTATION in ROTATIONS else "cw",
+).strip().lower()
+if THIGH_INNER_ROTATION not in ROTATIONS:
+    THIGH_INNER_ROTATION = "cw"
 THIGH_TRY_ROTATIONS = os.environ.get("THIGH_TRY_ROTATIONS", "0").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
+THIGH_OUTER_TRY_ROTATIONS = os.environ.get(
+    "THIGH_OUTER_TRY_ROTATIONS",
+    os.environ.get("THIGH_TRY_ROTATIONS", "0"),
+).strip().lower() in {"1", "true", "yes", "on"}
+THIGH_INNER_TRY_ROTATIONS = os.environ.get(
+    "THIGH_INNER_TRY_ROTATIONS",
+    os.environ.get("THIGH_TRY_ROTATIONS", "0"),
+).strip().lower() in {"1", "true", "yes", "on"}
 THIGH_ALIGN_DEPTH = os.environ.get("THIGH_ALIGN_DEPTH", "1").strip().lower() in {
     "1",
     "true",
@@ -837,10 +961,7 @@ def _pose_distance(current_pose, target_pose):
     pos_dist = math.sqrt(
         sum((float(current_pose[i]) - float(target_pose[i])) ** 2 for i in range(3))
     )
-    ori_dist = max(
-        abs(_shortest_angle_delta_deg(current_pose[i], target_pose[i]))
-        for i in range(3, 6)
-    )
+    ori_dist = _orientation_distance_deg(current_pose, target_pose)
     return pos_dist, ori_dist
 
 
@@ -848,10 +969,7 @@ def _servo_interpolation_metrics(start_pose, target_pose):
     linear_distance_mm = math.sqrt(
         sum((float(target_pose[i]) - float(start_pose[i])) ** 2 for i in range(3))
     )
-    orientation_distance_deg = max(
-        abs(_shortest_angle_delta_deg(start_pose[i], target_pose[i]))
-        for i in range(3, 6)
-    )
+    orientation_distance_deg = _orientation_distance_deg(start_pose, target_pose)
     return linear_distance_mm, orientation_distance_deg
 
 
@@ -957,6 +1075,23 @@ def _parse_force_approach_response(cmd_res):
         return None
 
 
+def _parse_force_fen_response(cmd_res):
+    """Parse ServoCartForceFenJin's structured command response."""
+    parts = [part.strip() for part in str(cmd_res).split(",")]
+    if len(parts) < 10:
+        return None
+    try:
+        return {
+            "ret": int(float(parts[0])),
+            "status": int(float(parts[1])),
+            "normal_correction_mm": float(parts[2]),
+            "elapsed_s": float(parts[3]),
+            "force": [float(value) for value in parts[4:10]],
+        }
+    except ValueError:
+        return None
+
+
 def _quat_from_rpy_deg(rx_deg, ry_deg, rz_deg):
     rx = math.radians(float(rx_deg))
     ry = math.radians(float(ry_deg))
@@ -973,6 +1108,15 @@ def _quat_from_rpy_deg(rx_deg, ry_deg, rz_deg):
         sy * cp * cr - cy * sp * sr,
         cy * cp * cr + sy * sp * sr,
     )
+
+
+def _orientation_distance_deg(current_pose, target_pose):
+    """Return the physical rotation difference, independent of Euler aliases."""
+    current_quat = _quat_from_rpy_deg(*current_pose[3:6])
+    target_quat = _quat_from_rpy_deg(*target_pose[3:6])
+    dot = abs(sum(a * b for a, b in zip(current_quat, target_quat)))
+    dot = max(-1.0, min(1.0, float(dot)))
+    return math.degrees(2.0 * math.acos(dot))
 
 
 def _state_field(msg, *names, default=None):
@@ -1054,11 +1198,28 @@ def _force_target_for_massage_action(value, action):
 
 
 def _thigh_offset_for_massage_target(value):
-    return THIGH_INNER_OFFSET_MM if _normalize_massage_target(value) == "leg_inner" else THIGH_OUTER_OFFSET_MM
+    target = _normalize_massage_target(value)
+    offset_mm = THIGH_INNER_OFFSET_MM if target == "leg_inner" else THIGH_OUTER_OFFSET_MM
+    # The inner-thigh setup uses an explicit screen direction.  Treat its
+    # offset as a distance: a stale negative value must not silently reverse
+    # image-down and push the detected line toward the top of the image.
+    if target == "leg_inner" and THIGH_DIRECTION == "image-down":
+        return abs(float(offset_mm))
+    return float(offset_mm)
 
 
 def _thigh_line_shift_for_massage_target(value):
     return THIGH_INNER_LINE_SHIFT_MM if _normalize_massage_target(value) == "leg_inner" else THIGH_OUTER_LINE_SHIFT_MM
+
+
+def _thigh_side_for_massage_target(value):
+    return THIGH_INNER_SIDE if _normalize_massage_target(value) == "leg_inner" else THIGH_OUTER_SIDE
+
+
+def _thigh_rotations_for_massage_target(value):
+    if _normalize_massage_target(value) == "leg_inner":
+        return ROTATIONS if THIGH_INNER_TRY_ROTATIONS else (THIGH_INNER_ROTATION,)
+    return ROTATIONS if THIGH_OUTER_TRY_ROTATIONS else (THIGH_OUTER_ROTATION,)
 
 
 def _massage_target_label(value):
@@ -1906,6 +2067,7 @@ class Ros2ForceController:
         self.config.guard_force_limit = max(abs(FORCE_GUARD_LIMIT_N), self.target_force_n + 10.0)
         self.config.guard_torque_limit = abs(FORCE_GUARD_TORQUE_LIMIT_NM)
         self._monitor_period = 1.0 / max(1.0, FORCE_MONITOR_HZ)
+        self._continuous_fen_available = bool(FORCE_CONTINUOUS_FEN_ENABLE)
 
     def _cmd(self, name, *values):
         return f"{name}(" + ",".join(_fmt_value(v) for v in values) + ")"
@@ -1996,6 +2158,78 @@ class Ros2ForceController:
                 f"{context}: {reason}; "
                 f"Fx={data[0]:.2f} Fy={data[1]:.2f} Fz={data[2]:.2f}N "
                 f"travel={result['travel_mm']:.2f}mm"
+            )
+        return result
+
+    def continuous_fen_jin(
+        self,
+        split_axis_unit,
+        normal_axis_unit,
+        amplitude_mm,
+        repeat_count,
+        normal_min_correction_mm,
+        normal_max_correction_mm,
+        context,
+    ):
+        """Sweep center/+/-/(+/-...) without a center dwell in one servo session.
+
+        An unsupported command may safely fall back before motion starts. Once the
+        force-aware command is accepted, every safety or transport failure raises;
+        retrying the same contact motion as position-only moves would be unsafe.
+        """
+        if not self._continuous_fen_available:
+            return None
+
+        cmd = self._cmd(
+            "ServoCartForceFenJin",
+            *split_axis_unit,
+            *normal_axis_unit,
+            abs(float(amplitude_mm)),
+            max(1, int(repeat_count)),
+            FORCE_CONTINUOUS_FEN_CYCLE_S,
+            FORCE_CONTINUOUS_FEN_HZ,
+            FORCE_AXIS_SIGN,
+            abs(float(self.target_force_n)),
+            abs(float(FORCE_TARGET_TOL_N)),
+            FORCE_CONTINUOUS_FEN_NORMAL_KP_MM_PER_N_S,
+            FORCE_CONTINUOUS_FEN_NORMAL_MAX_SPEED_MM_S,
+            float(normal_min_correction_mm),
+            float(normal_max_correction_mm),
+            FORCE_CONTINUOUS_FILTER_ALPHA,
+            self.config.software_force_limit,
+            self.tangential_force_limit,
+            FORCE_SOFTWARE_TORQUE_LIMIT_NM,
+        )
+        ret, cmd_res = self.robot._call(
+            cmd,
+            timeout_sec=max(
+                ROS2_CALL_TIMEOUT_S,
+                FORCE_CONTINUOUS_FEN_CYCLE_S * max(1, int(repeat_count)) + 5.0,
+            ),
+            raise_on_error=False,
+        )
+        result = _parse_force_fen_response(cmd_res)
+        if result is None:
+            if ret == -1:
+                self._continuous_fen_available = False
+                print(
+                    f"[Force] {context}: 控制服务不支持连续分筋，"
+                    "本次进程回退到旧分段动作；请重新构建并重启 ROS2 控制服务"
+                )
+                return None
+            raise RuntimeError(f"{context}: 连续分筋返回不可解析: {cmd_res}")
+        if ret != 0:
+            reason = {
+                -2301: "法向力超过软件限位",
+                -2302: "切向力超过软件限位",
+                -2303: "力矩超过软件限位",
+                -2304: "连续分筋期间无法读取六维力",
+            }.get(ret, f"控制器/SDK 错误 {ret}")
+            data = result["force"]
+            raise RuntimeError(
+                f"{context}: {reason}; "
+                f"Fx={data[0]:.2f} Fy={data[1]:.2f} Fz={data[2]:.2f}N "
+                f"normal_correction={result['normal_correction_mm']:+.2f}mm"
             )
         return result
 
@@ -2445,6 +2679,15 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
     def _fixed_motion_orientation(self):
         if (
             getattr(self, "massage_target", None) == "back"
+            and BACK_FOLLOW_LOCAL_NORMAL
+        ):
+            # Keep the validated high-elbow IK branch, but let every back point
+            # retain the RPY and tool-Z direction derived from its local plane.
+            # This deliberately takes precedence over the process-wide
+            # FT_KEEP_CURRENT_ORIENTATION setting used by the shared runner.
+            return None
+        if (
+            getattr(self, "massage_target", None) == "back"
             and getattr(self, "back_posture_seed", None) is not None
         ):
             return list(self.back_posture_seed["orientation_rpy"])
@@ -2491,9 +2734,18 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 f"{FORCE_CONTINUOUS_NEAR_SPEED_MM_S:g}mm/s，"
                 "安全故障不回退 MoveCart)"
             )
+        if FORCE_CONTINUOUS_FEN_ENABLE:
+            print(
+                f"力控分筋: {FORCE_CONTINUOUS_FEN_HZ:g}Hz 整套连续伺服 "
+                f"(cycle={FORCE_CONTINUOUS_FEN_CYCLE_S:g}s，"
+                "中心起步后只在上下端点间往复，中点不停顿)"
+            )
         print(
             "贴近姿态: "
             + (
+                "背部逐点跟随局部深度平面法向"
+                if self.massage_target == "back" and BACK_FOLLOW_LOCAL_NORMAL
+                else
                 "保持当前 TCP 姿态并沿工具 Z 轴贴近"
                 if ROS2_KEEP_CURRENT_ORIENTATION
                 else "跟随局部深度平面法向"
@@ -2771,6 +3023,130 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 frame["depth_patch_stats"] = stats
         self._print_trajectory_depth_report("背部膀胱经")
 
+    def _filter_back_trajectory_quality(self):
+        """Reject isolated depth/geometry outliers before they reach the robot."""
+        if self.massage_target != "back" or not self.massage_frames:
+            return True
+
+        original_frames = list(self.massage_frames)
+        adjacent_gaps_mm = []
+        for previous, current in zip(original_frames, original_frames[1:]):
+            try:
+                previous_point = np.asarray(previous["point_mm"], dtype=np.float64)
+                current_point = np.asarray(current["point_mm"], dtype=np.float64)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if previous_point.shape == (3,) and current_point.shape == (3,):
+                gap_mm = float(np.linalg.norm(current_point - previous_point))
+                if math.isfinite(gap_mm) and gap_mm > 0.0:
+                    adjacent_gaps_mm.append(gap_mm)
+
+        median_gap_mm = (
+            float(np.median(adjacent_gaps_mm)) if adjacent_gaps_mm else 0.0
+        )
+        allowed_gap_mm = max(
+            float(BACK_TRAJECTORY_MAX_POINT_GAP_MM),
+            median_gap_mm * float(BACK_TRAJECTORY_GAP_MEDIAN_MULTIPLIER),
+        )
+
+        kept_frames = []
+        rejected = []
+        for fallback_index, frame in enumerate(original_frames):
+            point_no = int(frame.get("index", fallback_index)) + 1
+            reasons = []
+            try:
+                point_mm = np.asarray(frame["point_mm"], dtype=np.float64)
+            except (KeyError, TypeError, ValueError):
+                point_mm = np.asarray([], dtype=np.float64)
+            if point_mm.shape != (3,) or not np.all(np.isfinite(point_mm)):
+                reasons.append("机器人坐标无效")
+
+            depth_m = frame.get("depth_m")
+            try:
+                depth_m = None if depth_m is None else float(depth_m)
+            except (TypeError, ValueError):
+                depth_m = None
+                reasons.append("深度无效")
+            if depth_m is not None and (not math.isfinite(depth_m) or depth_m <= 0.0):
+                reasons.append("深度无效")
+
+            stats = frame.get("depth_patch_stats") or {}
+            try:
+                std_mm = float(stats.get("std_mm"))
+            except (TypeError, ValueError):
+                std_mm = None
+            if (
+                std_mm is not None
+                and BACK_TRAJECTORY_MAX_DEPTH_STD_MM > 0.0
+                and std_mm > BACK_TRAJECTORY_MAX_DEPTH_STD_MM
+            ):
+                reasons.append(f"局部深度噪声{std_mm:.1f}mm")
+
+            try:
+                patch_range_mm = (
+                    float(stats.get("max_m")) - float(stats.get("min_m"))
+                ) * 1000.0
+            except (TypeError, ValueError):
+                patch_range_mm = None
+            if (
+                patch_range_mm is not None
+                and BACK_TRAJECTORY_MAX_PATCH_RANGE_MM > 0.0
+                and patch_range_mm > BACK_TRAJECTORY_MAX_PATCH_RANGE_MM
+            ):
+                reasons.append(f"局部深度跨度{patch_range_mm:.1f}mm")
+
+            if kept_frames and point_mm.shape == (3,) and np.all(np.isfinite(point_mm)):
+                previous = kept_frames[-1]
+                previous_point = np.asarray(previous["point_mm"], dtype=np.float64)
+                gap_mm = float(np.linalg.norm(point_mm - previous_point))
+                if allowed_gap_mm > 0.0 and gap_mm > allowed_gap_mm:
+                    reasons.append(f"相邻点距离{gap_mm:.1f}mm")
+
+                previous_depth = previous.get("depth_m")
+                if depth_m is not None and previous_depth is not None:
+                    try:
+                        depth_jump_m = abs(depth_m - float(previous_depth))
+                    except (TypeError, ValueError):
+                        depth_jump_m = 0.0
+                    if (
+                        BACK_TRAJECTORY_MAX_DEPTH_JUMP_M > 0.0
+                        and depth_jump_m > BACK_TRAJECTORY_MAX_DEPTH_JUMP_M
+                    ):
+                        reasons.append(f"相邻深度跳变{depth_jump_m:.3f}m")
+
+            if reasons:
+                rejected.append((point_no, reasons))
+            else:
+                kept_frames.append(frame)
+
+        minimum_count = max(
+            int(BACK_TRAJECTORY_MIN_POINTS),
+            int(math.ceil(len(original_frames) * BACK_TRAJECTORY_MIN_RETAIN_RATIO)),
+        )
+        if len(kept_frames) < minimum_count:
+            print(
+                "[BackQuality] 背部轨迹异常点过多，拒绝执行："
+                f"仅保留 {len(kept_frames)}/{len(original_frames)} 点，"
+                f"最低要求 {minimum_count} 点"
+            )
+            return False
+
+        if rejected:
+            for point_no, reasons in rejected:
+                print(f"[BackQuality] 丢弃点{point_no}: {', '.join(reasons)}")
+            print(
+                f"[BackQuality] 轨迹质量过滤完成：保留 {len(kept_frames)}/"
+                f"{len(original_frames)} 点，典型间距={median_gap_mm:.1f}mm，"
+                f"允许间距={allowed_gap_mm:.1f}mm"
+            )
+
+        self.massage_frames = kept_frames
+        self.massage_points_mm = [frame["point_mm"] for frame in kept_frames]
+        self.massage_pixels = [
+            frame.get("pixel") for frame in kept_frames if frame.get("pixel") is not None
+        ]
+        return True
+
     def _save_trajectory_debug_image(self, path):
         if self.locked_color_frame is None:
             return None
@@ -2990,7 +3366,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         reachable_frames = []
         failed_points = []
         print(
-            "[BackReach] 背部固定构型可达性检查："
+            "[BackReach] 背部种子构型可达性检查："
             "验证悬空位、最大贴近位和分筋横向包络"
         )
         for fallback_index, frame in enumerate(self.massage_frames):
@@ -3023,8 +3399,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             pose[3], pose[4], pose[5] = fixed_orientation
         return pose
 
-    def _pose_from_frame_offset(self, frame, offset_mm, split_offset_mm=0.0):
-        point_mm = np.asarray(frame["point_mm"], dtype=np.float64)
+    def _motion_axes_from_frame(self, frame):
         contact_axis_unit = np.asarray(frame["tool_z_unit"], dtype=np.float64)
         split_axis_unit = np.asarray(frame["split_axis_unit"], dtype=np.float64)
         fixed_orientation = self._fixed_motion_orientation()
@@ -3042,6 +3417,11 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             )
             if projected_split is not None:
                 split_axis_unit = projected_split
+        return contact_axis_unit, split_axis_unit
+
+    def _pose_from_frame_offset(self, frame, offset_mm, split_offset_mm=0.0):
+        point_mm = np.asarray(frame["point_mm"], dtype=np.float64)
+        contact_axis_unit, split_axis_unit = self._motion_axes_from_frame(frame)
         tcp_offset_mm = float(offset_mm) - float(TOOL_TIP_LENGTH_MM)
         pos = point_mm + contact_axis_unit * tcp_offset_mm + split_axis_unit * float(split_offset_mm)
         rx, ry, rz = frame["base_pose"]
@@ -3455,6 +3835,67 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
         return offset, True
 
+    def _continuous_fen_round(
+        self,
+        frame,
+        start_offset_mm,
+        context,
+        repeat_count=1,
+        amplitude_mm=None,
+    ):
+        if (
+            not FORCE_CONTINUOUS_FEN_ENABLE
+            or self.force_controller is None
+        ):
+            return None
+
+        normal_axis, split_axis = self._motion_axes_from_frame(frame)
+        normal_axis = np.asarray(normal_axis, dtype=np.float64)
+        split_axis = np.asarray(split_axis, dtype=np.float64)
+        normal_norm = float(np.linalg.norm(normal_axis))
+        split_norm = float(np.linalg.norm(split_axis))
+        if normal_norm < 1e-9 or split_norm < 1e-9:
+            raise RuntimeError(f"{context}: 分筋轴或接触法向无效")
+        normal_axis /= normal_norm
+        split_axis /= split_norm
+
+        offset = float(start_offset_mm)
+        min_offset = -float(self.hover_height_mm)
+        max_offset = max(
+            float(self.force_approach_max_offset_mm),
+            float(FORCE_CONTACT_OFFSET_MM),
+        )
+        result = self.force_controller.continuous_fen_jin(
+            split_axis.tolist(),
+            normal_axis.tolist(),
+            abs(
+                float(
+                    FORCE_FEN_LATERAL_MM
+                    if amplitude_mm is None
+                    else amplitude_mm
+                )
+            ),
+            max(1, int(repeat_count)),
+            min_offset - offset,
+            max_offset - offset,
+            context,
+        )
+        if result is None:
+            return None
+
+        offset = max(
+            min_offset,
+            min(max_offset, offset + float(result["normal_correction_mm"])),
+        )
+        data = result["force"]
+        print(
+            f"[Force] {context}: {max(1, int(repeat_count))}轮上下连续拨动完成 "
+            f"cycle={result['elapsed_s']:.2f}s, "
+            f"normal_correction={result['normal_correction_mm']:+.2f}mm, "
+            f"Fz={data[2]:.2f}N"
+        )
+        return offset, True
+
     def _retract_to_hover(self, frame, context):
         hover_pose = self._pose_from_frame_offset(frame, -self.hover_height_mm)
         if not self._move_force_pose_checked(
@@ -3676,6 +4117,198 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         for previous, target in zip(hover_poses, hover_poses[1:]):
             path.extend(_linear_transit_waypoints(previous, target, ROS2_SEGMENT_MAX_STEP_MM))
         return path
+
+    def _back_start_entry_stages(self, frames, target_index, entry_index, current_pose):
+        """Build a safe-height entry followed by a clearance-only route to the target."""
+        frames = list(frames)
+        target_index = int(target_index)
+        entry_index = int(entry_index)
+        current = [float(value) for value in current_pose]
+        clearance_mm = max(
+            float(self.hover_height_mm),
+            float(BACK_TRAJECTORY_PROBE_CLEARANCE_MM),
+        )
+        clearance_poses = [
+            self._pose_from_frame_offset(frame, -clearance_mm)
+            for frame in frames
+        ]
+        target_hover_pose = self._pose_from_frame_offset(
+            frames[target_index],
+            -self.hover_height_mm,
+        )
+        entry_pose = clearance_poses[entry_index]
+        transit_z = max(
+            float(current[2]),
+            float(entry_pose[2]) + ROS2_TRANSIT_MARGIN_MM,
+            ROS2_LIFT_SAFE_Z_MM,
+        )
+        stages = []
+
+        def point_no(frame_index):
+            return int(frames[frame_index].get("index", frame_index)) + 1
+
+        def append_stage(label, pose):
+            target = [float(value) for value in pose]
+            previous = current if not stages else stages[-1][1]
+            pos_dist, ori_dist = _pose_distance(previous, target)
+            if pos_dist > 1e-3 or ori_dist > 1e-3:
+                stages.append((label, target))
+
+        if current[2] < transit_z - ROS2_TRANSIT_LIFT_TOL_MM:
+            lift_pose = list(current)
+            lift_pose[2] = transit_z
+            append_stage("原地抬升", lift_pose)
+
+        high_entry_pose = [
+            entry_pose[0],
+            entry_pose[1],
+            transit_z,
+            entry_pose[3],
+            entry_pose[4],
+            entry_pose[5],
+        ]
+        append_stage(f"高位进入点{point_no(entry_index)}", high_entry_pose)
+        append_stage(f"下降到点{point_no(entry_index)}安全悬空位", entry_pose)
+
+        if entry_index < target_index:
+            route_indices = range(entry_index + 1, target_index + 1)
+        else:
+            route_indices = range(entry_index - 1, target_index - 1, -1)
+        for frame_index in route_indices:
+            append_stage(
+                f"沿安全悬空轨迹到点{point_no(frame_index)}",
+                clearance_poses[frame_index],
+            )
+        append_stage(f"下降到目标点{point_no(target_index)}悬空位", target_hover_pose)
+        return stages, clearance_mm
+
+    def _back_start_entry_plan(self, frames, target_index=0, current_pose=None):
+        """Find a fully IK-valid entry without dropping otherwise reachable points."""
+        frames = list(frames)
+        if not frames:
+            return None
+        target_index = max(0, min(len(frames) - 1, int(target_index)))
+        current = (
+            self.robot.get_actual_tcp_pose()
+            if current_pose is None
+            else [float(value) for value in current_pose]
+        )
+        candidate_indices = sorted(
+            range(len(frames)),
+            key=lambda index: (abs(index - target_index), index),
+        )
+        first_failure = None
+
+        for entry_index in candidate_indices:
+            stages, clearance_mm = self._back_start_entry_stages(
+                frames,
+                target_index,
+                entry_index,
+                current,
+            )
+            previous = list(current)
+            waypoint_count = 0
+            failure = None
+            for stage_label, stage_pose in stages:
+                waypoints = _linear_transit_waypoints(
+                    previous,
+                    stage_pose,
+                    ROS2_SEGMENT_MAX_STEP_MM,
+                )
+                for waypoint_index, waypoint in enumerate(waypoints, start=1):
+                    waypoint_count += 1
+                    if not self._pose_ik_ok(waypoint):
+                        failure = {
+                            "entry_index": entry_index,
+                            "stage": stage_label,
+                            "waypoint_index": waypoint_index,
+                            "waypoint_count": len(waypoints),
+                            "pose": waypoint,
+                        }
+                        break
+                if failure is not None:
+                    break
+                previous = stage_pose
+            if failure is None:
+                return {
+                    "entry_index": entry_index,
+                    "target_index": target_index,
+                    "clearance_mm": clearance_mm,
+                    "stages": stages,
+                    "waypoint_count": waypoint_count,
+                }
+            if first_failure is None:
+                first_failure = failure
+
+        return {
+            "entry_index": None,
+            "target_index": target_index,
+            "clearance_mm": max(
+                float(self.hover_height_mm),
+                float(BACK_TRAJECTORY_PROBE_CLEARANCE_MM),
+            ),
+            "stages": [],
+            "waypoint_count": 0,
+            "failure": first_failure,
+        }
+
+    def _move_to_start_frame(self, frames, target_index, context, vel=TRANSIT_MOVE_VEL_FAST):
+        frames = list(frames)
+        if not frames:
+            print(f"错误：{context}没有可用轨迹点")
+            return False
+        target_index = max(0, min(len(frames) - 1, int(target_index)))
+        target_frame = frames[target_index]
+        target_pose = self._pose_from_frame_offset(target_frame, -self.hover_height_mm)
+        if (
+            self.massage_target != "back"
+            or not BACK_POSTURE_SEED_ENABLE
+            or self.back_posture_seed is None
+        ):
+            return self._move_to_work_pose(target_pose, context, vel)
+
+        plan = self._back_start_entry_plan(frames, target_index=target_index)
+        if plan is None or plan.get("entry_index") is None:
+            failure = None if plan is None else plan.get("failure")
+            if failure:
+                print(
+                    f"错误：{context}完整转场逆解失败；"
+                    f"首个失败阶段={failure['stage']} "
+                    f"step={failure['waypoint_index']}/{failure['waypoint_count']} "
+                    f"target={self._fmt_pose(failure['pose'])}"
+                )
+            else:
+                print(f"错误：{context}没有可用的背部安全入口")
+            return False
+
+        entry_index = int(plan["entry_index"])
+        target_point_no = int(frames[target_index].get("index", target_index)) + 1
+        entry_point_no = int(frames[entry_index].get("index", entry_index)) + 1
+        if entry_index == target_index:
+            print(
+                f"[BackTransit] 目标点{target_point_no}完整转场逆解通过 "
+                f"(clearance={plan['clearance_mm']:.1f}mm, "
+                f"waypoints={plan['waypoint_count']})"
+            )
+        else:
+            print(
+                f"[BackTransit] 目标点{target_point_no}直达转场不可达，"
+                f"改从点{entry_point_no}进入，再沿"
+                f"{plan['clearance_mm']:.1f}mm安全悬空轨迹返回目标点{target_point_no} "
+                f"(waypoints={plan['waypoint_count']})"
+            )
+
+        # The complete path has been checked before this first movement.  Execute
+        # exactly the same stages so a runtime IK failure cannot be hidden by a
+        # different fallback route.
+        for stage_label, stage_pose in plan["stages"]:
+            if not self._move_pose_segmented(
+                stage_pose,
+                f"{context} {stage_label}",
+                vel=vel,
+            ):
+                return False
+        return True
 
     def _execute_back_hover_probe(self):
         if self.massage_target != "back" or not BACK_TRAJECTORY_PROBE_ONLY:
@@ -4021,8 +4654,25 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         return self._move_pose_segmented(target, f"{context} 下降", vel=vel)
 
     def _move_to_hover_with_fallback(self, hover_pose, context):
+        target = [float(v) for v in hover_pose]
+        current = self.robot.get_actual_tcp_pose()
+        position_distance_mm, _ = _pose_distance(current, target)
+        if (
+            ROS2_HOVER_DIRECT_MAX_DISTANCE_MM > 0.0
+            and position_distance_mm > ROS2_HOVER_DIRECT_MAX_DISTANCE_MM
+        ):
+            print(
+                f"{context}: 低位跨点距离 {position_distance_mm:.1f}mm 超过 "
+                f"{ROS2_HOVER_DIRECT_MAX_DISTANCE_MM:.1f}mm，改走安全高度转场"
+            )
+            return self._move_to_work_pose(
+                target,
+                f"{context} 安全转场",
+                TRANSIT_MOVE_VEL_SLOW,
+            )
+
         if self._move_cart_checked(
-            hover_pose,
+            target,
             context,
             TRANSIT_MOVE_VEL_SLOW,
             required=False,
@@ -4030,7 +4680,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             return True
         print(f"{context}: 低位直达失败，尝试安全转场兜底")
         return self._move_to_work_pose(
-            hover_pose,
+            target,
             f"{context} 兜底",
             TRANSIT_MOVE_VEL_SLOW,
         )
@@ -4048,7 +4698,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         device = "cuda:0" if THIGH_DEVICE == "auto" and torch.cuda.is_available() else (
             "cpu" if THIGH_DEVICE == "auto" else THIGH_DEVICE
         )
-        rotations = ROTATIONS if THIGH_TRY_ROTATIONS else (THIGH_ROTATION,)
+        rotations = _thigh_rotations_for_massage_target(self.massage_target)
         print(f"RTMPose 配置: {DEFAULT_RTMPOSE_CONFIG}")
         print(f"RTMPose 权重: {DEFAULT_RTMPOSE_WEIGHTS}")
         print(f"RTMPose device={device}, rotations={','.join(rotations)}")
@@ -4212,11 +4862,12 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
     def capture_thigh_trajectory(self):
         label = self._thigh_target_label()
+        thigh_side = _thigh_side_for_massage_target(self.massage_target)
         thigh_offset_mm = _thigh_offset_for_massage_target(self.massage_target)
         thigh_line_shift_mm = _thigh_line_shift_for_massage_target(self.massage_target)
         print(f"等待{label}检测稳定...")
         print(
-            f"腿部参数: side={THIGH_SIDE}, offset={thigh_offset_mm:.1f}mm, "
+            f"腿部参数: side={thigh_side}, offset={thigh_offset_mm:.1f}mm, "
             f"line_shift={thigh_line_shift_mm:.1f}mm, "
             f"direction={THIGH_DIRECTION}, stable_frames={THIGH_STABLE_FRAMES}, "
             f"min_depth_ratio={THIGH_MIN_DEPTH_RATIO:.2f}"
@@ -4244,7 +4895,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     color,
                     depth,
                     reader.depth_scale,
-                    THIGH_SIDE,
+                    thigh_side,
                     THIGH_KPT_THR,
                     self.thigh_rotations,
                 )
@@ -4287,7 +4938,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         vis,
                         [
                             f"{label}: side={selection.side} offset={thigh_offset_mm:.1f}mm line_shift={thigh_line_shift_mm:.1f}mm direction={THIGH_DIRECTION}",
-                            f"depth valid={valid_ratio * 100:.0f}% stable={stable_count}/{THIGH_STABLE_FRAMES} dir={direction_source} skip={skipped_points}",
+                            f"depth valid={valid_ratio * 100:.0f}% stable={stable_count}/{THIGH_STABLE_FRAMES} pose_rot={selection.rotation} dir={direction_source} skip={skipped_points}",
                             "s lock now | q quit",
                         ],
                     )
@@ -4566,6 +5217,9 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         print("背部轨迹生成失败，请重新检测后再按 s")
                         continue
                     self._annotate_back_depth_diagnostics()
+                    if not self._filter_back_trajectory_quality():
+                        print("背部轨迹异常点过多，请重新检测后再按 s")
+                        continue
                     saved_path = self._save_locked_trajectory(
                         "back",
                         extra={"trajectory_type": "bladder_meridian"},
@@ -4608,6 +5262,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
     def run_leg_interactive(self):
         label = self._thigh_target_label()
+        thigh_side = _thigh_side_for_massage_target(self.massage_target)
         thigh_offset_mm = _thigh_offset_for_massage_target(self.massage_target)
         thigh_line_shift_mm = _thigh_line_shift_for_massage_target(self.massage_target)
         print(f"腿部模式：实时检测{label}；按 s 保存轨迹，按 g 执行动作，按 q 退出。")
@@ -4657,7 +5312,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         color,
                         depth,
                         reader.depth_scale,
-                        THIGH_SIDE,
+                        thigh_side,
                         THIGH_KPT_THR,
                         self.thigh_rotations,
                     )
@@ -4696,7 +5351,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                             vis,
                             [
                                 f"{label} detect side={selection.side} offset={thigh_offset_mm:.1f}mm line_shift={thigh_line_shift_mm:.1f}mm direction={THIGH_DIRECTION}",
-                                f"depth valid={valid_ratio * 100:.0f}% stable={stable_count}/{THIGH_STABLE_FRAMES} dir={direction_source} skip={skipped_points}",
+                                f"depth valid={valid_ratio * 100:.0f}% stable={stable_count}/{THIGH_STABLE_FRAMES} pose_rot={selection.rotation} dir={direction_source} skip={skipped_points}",
                                 "s save trajectory | g start robot | q quit",
                             ],
                         )
@@ -4761,7 +5416,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         extra={
                             "trajectory_type": self._thigh_trajectory_type(),
                             "raw_confirmation_json": str(saved_raw_path),
-                            "thigh_side": THIGH_SIDE,
+                            "thigh_side": thigh_side,
                             "thigh_offset_mm": float(thigh_offset_mm),
                             "thigh_line_shift_mm": float(thigh_line_shift_mm),
                             "thigh_direction": THIGH_DIRECTION,
@@ -4822,7 +5477,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
         for repeat_idx in range(DIAN_JIN_REPEAT_COUNT):
             round_text = f"{repeat_idx + 1}/{DIAN_JIN_REPEAT_COUNT}"
-            action_label = "点筋小幅分筋" if use_small_fen else "点筋"
+            action_label = "点筋小幅上下拨动" if use_small_fen else "点筋"
             self.update_preview_status(f"{action_label} {round_text}", frame.get("index"))
 
             if LASTTIME_ROS2_FORCE:
@@ -4834,32 +5489,34 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     if not reached:
                         return False
                     if use_small_fen:
-                        offset, ok = self._hold_target_force(
+                        continuous_result = self._continuous_fen_round(
                             frame,
-                            0.0,
                             offset,
-                            FORCE_FEN_DWELL_S,
-                            f"{action_label}中心保压 {round_text}",
+                            f"{action_label}上下连续拨动 {round_text}",
+                            1,
+                            amplitude_mm=small_fen_lateral_mm,
                         )
-                        if not ok:
-                            return False
-                        for label, split_offset in (
-                            (f"{action_label}偏移+ {round_text}", small_fen_lateral_mm),
-                            (f"{action_label}偏移- {round_text}", -small_fen_lateral_mm),
-                            (f"{action_label}回中心 {round_text}", 0.0),
-                        ):
-                            pose = self._pose_from_frame_offset(frame, offset, split_offset)
-                            if not self._move_force_pose_checked(pose, label):
-                                return False
-                            offset, ok = self._hold_target_force(
-                                frame,
-                                split_offset,
-                                offset,
-                                FORCE_FEN_DWELL_S,
-                                f"{label}保压",
-                            )
+                        if continuous_result is not None:
+                            offset, ok = continuous_result
                             if not ok:
                                 return False
+                        else:
+                            for label, split_offset in (
+                                (f"{action_label}上端 {round_text}", small_fen_lateral_mm),
+                                (f"{action_label}下端 {round_text}", -small_fen_lateral_mm),
+                            ):
+                                pose = self._pose_from_frame_offset(frame, offset, split_offset)
+                                if not self._move_force_pose_checked(pose, label):
+                                    return False
+                                offset, ok = self._hold_target_force(
+                                    frame,
+                                    split_offset,
+                                    offset,
+                                    FORCE_FEN_DWELL_S,
+                                    f"{label}保压",
+                                )
+                                if not ok:
+                                    return False
                     else:
                         offset, ok = self._hold_target_force(
                             frame,
@@ -4880,9 +5537,8 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
 
             if use_small_fen:
                 for label, split_offset in (
-                    (f"点筋小幅分筋偏移+ {round_text}", small_fen_lateral_mm),
-                    (f"点筋小幅分筋偏移- {round_text}", -small_fen_lateral_mm),
-                    (f"点筋小幅分筋回中心 {round_text}", 0.0),
+                    (f"点筋小幅上下拨动上端 {round_text}", small_fen_lateral_mm),
+                    (f"点筋小幅上下拨动下端 {round_text}", -small_fen_lateral_mm),
                 ):
                     pose = self._pose_from_frame_offset(
                         frame,
@@ -4908,7 +5564,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     blendT=BLEND_BLOCKING,
                 )
                 if ret != 0:
-                    print(f"    警告：点筋小幅分筋{round_text}回到悬空位失败 (err={ret})")
+                    print(f"    警告：点筋小幅上下拨动{round_text}回到悬空位失败 (err={ret})")
                     return False
                 continue
 
@@ -4939,10 +5595,6 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
     def execute_fen_jin(self, frame):
         self.update_preview_status("分筋", frame.get("index"))
         hover_pose = self._pose_from_frame_offset(frame, -self.hover_height_mm)
-        center_pose = self._contact_pose_from_frame(frame)
-        positive_pose = self._contact_pose_from_frame(frame, FEN_JIN_LATERAL_MM)
-        negative_pose = self._contact_pose_from_frame(frame, -FEN_JIN_LATERAL_MM)
-
         if LASTTIME_ROS2_FORCE:
             ok = False
             try:
@@ -4951,35 +5603,35 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 offset, reached = self._approach_to_target_force(frame, "分筋中心")
                 if not reached:
                     return False
-                offset, ok = self._hold_target_force(
+                continuous_result = self._continuous_fen_round(
                     frame,
-                    0.0,
                     offset,
-                    FORCE_FEN_DWELL_S,
-                    "分筋中心保压",
+                    "分筋上下连续拨动",
+                    FEN_JIN_REPEAT_COUNT,
                 )
-                if not ok:
-                    return False
-
-                for repeat_idx in range(FEN_JIN_REPEAT_COUNT):
-                    round_text = f"{repeat_idx + 1}/{FEN_JIN_REPEAT_COUNT}"
-                    for label, split_offset in (
-                        (f"分筋偏移+ {round_text}", FORCE_FEN_LATERAL_MM),
-                        (f"分筋偏移- {round_text}", -FORCE_FEN_LATERAL_MM),
-                        (f"分筋回中心 {round_text}", 0.0),
-                    ):
-                        pose = self._pose_from_frame_offset(frame, offset, split_offset)
-                        if not self._move_force_pose_checked(pose, label):
-                            return False
-                        offset, ok = self._hold_target_force(
-                            frame,
-                            split_offset,
-                            offset,
-                            FORCE_FEN_DWELL_S,
-                            f"{label}保压",
-                        )
-                        if not ok:
-                            return False
+                if continuous_result is not None:
+                    offset, ok = continuous_result
+                    if not ok:
+                        return False
+                else:
+                    for repeat_idx in range(FEN_JIN_REPEAT_COUNT):
+                        round_text = f"{repeat_idx + 1}/{FEN_JIN_REPEAT_COUNT}"
+                        for label, split_offset in (
+                            (f"分筋上端 {round_text}", FORCE_FEN_LATERAL_MM),
+                            (f"分筋下端 {round_text}", -FORCE_FEN_LATERAL_MM),
+                        ):
+                            pose = self._pose_from_frame_offset(frame, offset, split_offset)
+                            if not self._move_force_pose_checked(pose, label):
+                                return False
+                            offset, ok = self._hold_target_force(
+                                frame,
+                                split_offset,
+                                offset,
+                                FORCE_FEN_DWELL_S,
+                                f"{label}保压",
+                            )
+                            if not ok:
+                                return False
             except Exception as exc:
                 print(f"    警告：分筋力控失败 ({exc})")
                 return False
@@ -5004,9 +5656,8 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
         for repeat_idx in range(FEN_JIN_REPEAT_COUNT):
             round_text = f"{repeat_idx + 1}/{FEN_JIN_REPEAT_COUNT}"
             for label, pose in (
-                (f"分筋偏移+ {round_text}", positive_pose),
-                (f"分筋偏移- {round_text}", negative_pose),
-                (f"分筋回悬空位 {round_text}", hover_pose),
+                (f"分筋上端 {round_text}", positive_pose),
+                (f"分筋下端 {round_text}", negative_pose),
             ):
                 ret = self.robot.MoveCart(
                     desc_pos=pose,
@@ -5019,6 +5670,16 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                     print(f"    警告：{label}失败 (err={ret})")
                     return False
                 time.sleep(0.2)
+        ret = self.robot.MoveCart(
+            desc_pos=hover_pose,
+            tool=ROS2_TOOL,
+            user=ROS2_USER,
+            vel=MOVE_VEL_SLOW,
+            blendT=BLEND_BLOCKING,
+        )
+        if ret != 0:
+            print(f"    警告：分筋结束回悬空位失败 (err={ret})")
+            return False
         return True
 
     def execute_shun_jin(self, frames=None):
@@ -5291,11 +5952,15 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             print("移动到起始位置...")
             first_frame = self.massage_frames[0]
             self.update_preview_status("移动到起始位置", first_frame.get("index", 0))
-            first_pose = self._pose_from_frame_offset(first_frame, -self.hover_height_mm)
-            if not self._move_to_work_pose(first_pose, "移动到起始位置", TRANSIT_MOVE_VEL_FAST):
+            if not self._move_to_start_frame(
+                self.massage_frames,
+                0,
+                "移动到起始位置",
+                TRANSIT_MOVE_VEL_FAST,
+            ):
                 return False
 
-            point_action_text = "点筋小幅分筋" if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"} else "点筋"
+            point_action_text = "点筋小幅上下拨动" if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"} else "点筋"
             print(
                 f"\n执行点位动作（严格顺序：{point_action_text} → 独立分筋；"
                 "完成后才允许进入顺筋）..."
@@ -5356,10 +6021,14 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
             )
             print("\n回到起点...")
             shun_first_frame = shun_frames[0]
-            shun_first_pose = self._pose_from_frame_offset(shun_first_frame, -self.hover_height_mm)
             self.update_preview_status("回到起点", shun_first_frame.get("index", 0))
             with _RobotMotionSpeedScaleOverride(SHUN_JIN_MOTION_SPEED_SCALE):
-                if not self._move_to_work_pose(shun_first_pose, "回到起点", MOVE_VEL_FAST):
+                if not self._move_to_start_frame(
+                    shun_frames,
+                    0,
+                    "回到起点",
+                    MOVE_VEL_FAST,
+                ):
                     print("    警告：回到顺筋起点失败，仍将尝试顺筋")
                     if not FT_CONTINUE_ON_POINT_ERROR:
                         return False
@@ -5438,6 +6107,8 @@ def main():
         else FORCE_APPROACH_MAX_OFFSET_MM
     )
     selected_force_target_n = float(_force_target_for_massage_target(massage_target))
+    selected_thigh_side = _thigh_side_for_massage_target(massage_target)
+    selected_thigh_rotations = _thigh_rotations_for_massage_target(massage_target)
     selected_thigh_offset_mm = _thigh_offset_for_massage_target(massage_target)
     selected_thigh_line_shift_mm = _thigh_line_shift_for_massage_target(massage_target)
     selected_normal_limit_n = max(abs(FORCE_SOFTWARE_NORMAL_LIMIT_N), abs(selected_force_target_n) + 30.0)
@@ -5448,7 +6119,7 @@ def main():
     print(f"  悬空高度: {selected_hover_mm}mm")
     print(f"  工具端补偿: 法兰/传感器中心到按摩头={TOOL_TIP_LENGTH_MM:.1f}mm")
     if DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}:
-        print(f"  点筋动作: 小幅分筋替代，偏移={DIAN_AS_SMALL_FEN_LATERAL_MM:.1f}mm")
+        print(f"  点筋动作: 小幅上下拨动，偏移=±{DIAN_AS_SMALL_FEN_LATERAL_MM:.1f}mm，每轮独立贴近/抬起")
     else:
         print(f"  点筋深度: {DIAN_JIN_DEPTH_MM}mm")
     print(f"  点筋次数: {DIAN_JIN_REPEAT_COUNT}次/点")
@@ -5459,7 +6130,15 @@ def main():
     print(f"  ROS2工作空间: {ROS2_WORKSPACE}")
     print(f"  ROS2控制服务: {ROS2_SERVICE_NAME}")
     print(f"  ROS2状态话题: {ROS2_STATE_TOPIC}")
-    print(f"  末端姿态: {'保持当前TCP姿态' if ROS2_KEEP_CURRENT_ORIENTATION else '局部深度平面法向'}")
+    if massage_target == "back" and BACK_FOLLOW_LOCAL_NORMAL:
+        motion_orientation_text = "逐点跟随局部深度平面法向"
+    elif massage_target == "back" and BACK_POSTURE_SEED_ENABLE:
+        motion_orientation_text = "背部种子固定朝向"
+    elif ROS2_KEEP_CURRENT_ORIENTATION:
+        motion_orientation_text = "保持当前TCP姿态"
+    else:
+        motion_orientation_text = "局部深度平面法向"
+    print(f"  末端姿态: {motion_orientation_text}")
     print(
         f"  平面拟合: radius={PLANE_FIT_RADIUS_PX}px "
         f"step={PLANE_FIT_STEP_PX}px min_pts={PLANE_FIT_MIN_POINTS}"
@@ -5471,9 +6150,9 @@ def main():
             else "off"
         )
         print(
-            f"  腿部检测: side={THIGH_SIDE} offset={selected_thigh_offset_mm:.1f}mm "
+            f"  腿部检测: side={selected_thigh_side} offset={selected_thigh_offset_mm:.1f}mm "
             f"line_shift={selected_thigh_line_shift_mm:.1f}mm "
-            f"direction={THIGH_DIRECTION} samples={THIGH_SAMPLE_POINTS} "
+            f"direction={THIGH_DIRECTION} pose_rotations={','.join(selected_thigh_rotations)} samples={THIGH_SAMPLE_POINTS} "
             f"stable={THIGH_STABLE_FRAMES} min_depth={THIGH_MIN_DEPTH_RATIO:.2f} "
             f"hover={THIGH_HOVER_HEIGHT_MM:.1f}mm approach_max={THIGH_FORCE_APPROACH_MAX_OFFSET_MM:.1f}mm "
             f"normal_tilt_limit={thigh_normal_limit_text} "
@@ -5500,6 +6179,7 @@ def main():
         print(
             f"  背部姿态种子: {'开启' if BACK_POSTURE_SEED_ENABLE else '关闭'} "
             f"seed={BACK_POSTURE_SEED_FILE} "
+            f"orientation={'local-normal' if BACK_FOLLOW_LOCAL_NORMAL else 'seed-fixed'} "
             f"hover_probe={'on' if BACK_TRAJECTORY_PROBE_ONLY else 'off'} "
             f"probe_clearance={BACK_TRAJECTORY_PROBE_CLEARANCE_MM:.1f}mm "
             f"probe_vel={BACK_TRAJECTORY_PROBE_VEL:.1f}"
@@ -5571,6 +6251,13 @@ def main():
             f"{FORCE_CONTINUOUS_DECEL_MM_S2:g}mm/s^2 "
             f"stable={FORCE_CONTINUOUS_TARGET_STABLE_SAMPLES} "
             f"timeout={FORCE_CONTINUOUS_TIMEOUT_S:g}s"
+        )
+        print(
+            f"  连续分筋: {'on' if FORCE_CONTINUOUS_FEN_ENABLE else 'off'} "
+            f"hz={FORCE_CONTINUOUS_FEN_HZ:g} "
+            f"cycle={FORCE_CONTINUOUS_FEN_CYCLE_S:g}s "
+            f"normal_kp={FORCE_CONTINUOUS_FEN_NORMAL_KP_MM_PER_N_S:g}mm/(N*s) "
+            f"normal_speed_max={FORCE_CONTINUOUS_FEN_NORMAL_MAX_SPEED_MM_S:g}mm/s"
         )
     else:
         print("  恒力控制: 关闭")

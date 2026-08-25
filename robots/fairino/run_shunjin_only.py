@@ -78,11 +78,17 @@ def main():
     print(f"  采样点数: {ft.SAMPLE_POINTS}")
     print(f"  ROS2控制服务: {ft.ROS2_SERVICE_NAME}")
     print(f"  ROS2状态话题: {ft.ROS2_STATE_TOPIC}")
-    print(f"  末端姿态: {'保持当前TCP姿态' if ft.ROS2_KEEP_CURRENT_ORIENTATION else '局部深度平面法向'}")
+    if massage_target == "back" and ft.BACK_FOLLOW_LOCAL_NORMAL:
+        orientation_text = "逐点跟随局部深度平面法向"
+    elif ft.ROS2_KEEP_CURRENT_ORIENTATION:
+        orientation_text = "保持当前TCP姿态"
+    else:
+        orientation_text = "局部深度平面法向"
+    print(f"  末端姿态: {orientation_text}")
     print(f"  安全位策略: {'旧P24固定安全位' if ft.ROS2_USE_LEGACY_SAFE_POSE else '当前位置竖直抬升'} safe_z={ft.ROS2_LIFT_SAFE_Z_MM:.1f}mm")
     if massage_target == "leg":
         print(
-            f"  腿部检测: side={ft.THIGH_SIDE} offset={ft.THIGH_OFFSET_MM:.1f}mm "
+            f"  腿部检测: side={ft._thigh_side_for_massage_target(massage_target)} offset={ft.THIGH_OFFSET_MM:.1f}mm "
             f"direction={ft.THIGH_DIRECTION} samples={ft.THIGH_SAMPLE_POINTS}"
         )
     if ft.LASTTIME_ROS2_FORCE:

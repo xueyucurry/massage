@@ -160,7 +160,7 @@
 
 1. `init_leg_vision()` 加载 `camera_to_robot.json`，初始化 `RTMPoseHipKneeDetector`。
 2. `run_leg_interactive()` 或 `capture_thigh_trajectory()` 从 RealSense 获取 RGB/depth。
-3. `detect_thigh_pose()` 检测髋膝关键点。
+3. `detect_thigh_pose()` 按目标选择髋膝关键点：外侧默认右腿且不旋转画面，内侧默认左腿并将横躺画面顺时针旋转后推理；目标腿置信度不足时不会回退到另一条腿。
 4. `estimate_thigh_outward_direction()` 根据 `THIGH_DIRECTION` 和 `THIGH_FLIP_DIRECTION` 确定偏移方向。
 5. `build_thigh_offset_line()` 用 `THIGH_OFFSET_MM` 生成按摩线并采样。
 6. 大腿内侧模式调用 `_crop_thigh_target_samples()` 跳过前 `THIGH_INNER_SKIP_POINTS` 个点。
@@ -213,7 +213,13 @@ pose = [x, y, z, rx, ry, rz]
 - `offset_mm` 为正时更接近目标点，为负时悬空。
 - `split_offset_mm` 用于分筋横向偏移。
 
-如果 `FT_KEEP_CURRENT_ORIENTATION=1` 且 `motion_orientation` 已记录，则 `_apply_motion_orientation()` 会覆盖轨迹计算得到的 RPY，保持当前 TCP 姿态。
+背部默认设置 `BACK_FOLLOW_LOCAL_NORMAL=1`，因此每个按摩点保留局部平面计算得到的
+RPY 和工具 Z 轴；该设置优先于共享启动脚本中的 `FT_KEEP_CURRENT_ORIENTATION=1`。
+`back_posture_seed.json` 仍用于锁定经过验证的高肘 `ik_config`，不会再覆盖逐点姿态。
+将 `BACK_FOLLOW_LOCAL_NORMAL=0` 后，背部才恢复使用种子中的固定 RPY。
+
+其他模式中，如果 `FT_KEEP_CURRENT_ORIENTATION=1` 且 `motion_orientation` 已记录，
+`_apply_motion_orientation()` 会覆盖轨迹计算得到的 RPY，保持当前 TCP 姿态。
 
 ### 标定文件链路
 
@@ -282,6 +288,12 @@ transit_z = max(current_z, target_z + ROS2_TRANSIT_MARGIN_MM, ROS2_LIFT_SAFE_Z_M
 1. 原地抬升到 `transit_z`。
 2. 高位平移到目标 XY。
 3. 下降到目标位姿。
+
+背部首次进入和回到顺筋起点额外使用 `_move_to_start_frame()`。它在任何转场运动前，
+以锁定的 `ik_config` 检查“原地抬升、高位平移、下降、悬空轨迹”的全部分段。若目标
+首点不能从高位直接进入，会选择距离最近且整条路径可达的按摩点作为入口，在默认
+`60mm` 安全悬空距离沿轨迹移动到目标首点，再下降到正常悬空高度。该过程只改变进入
+路线，不删除或重排按摩点；如果所有候选入口都失败，则保持安全高度并拒绝开始动作。
 
 `_move_pose_segmented()` 会先把每条直线作为一个原生 MoveL 连续执行，消除固定
 50 mm 分段造成的周期性停顿。只有直达失败并停止运动后，才按最大
@@ -404,23 +416,37 @@ offset += delta_mm
 
 1. 到当前点悬空位并确认卸力。
 2. 贴近到目标力。
-3. 保压 `LASTTIME_FORCE_DIAN_DWELL_S`。
-4. 回悬空位并确认卸力。
+3. 默认用一次连续伺服从中心进入
+   `+FT_DIAN_AS_SMALL_FEN_LATERAL_MM`，再立即反向拨到
+   `-FT_DIAN_AS_SMALL_FEN_LATERAL_MM`；轮内不执行端点保压，也不在中心停顿。
+4. 从下端直接回悬空位并确认卸力。
 5. 按 `FT_DIAN_JIN_REPEAT_COUNT` 重复执行，默认每个点 3 次。
 
-`FT_DIAN_JIN_MODE` 默认为 `dian`，因此上述步骤是真正的点按动作。旧的
-`small_fen` 替代模式仍可显式启用，但不再作为默认值。
+`FT_DIAN_JIN_MODE` 默认为 `small_fen`。幅度默认约为正式分筋的一半，但每轮仍独立
+贴近和抬起，因此动作分类和节奏保持为点筋；设为 `dian` 可恢复原点按动作。
+控制服务不支持连续命令时才会回退到旧的逐端点动作。
 
-非力控分支使用位置动作：从悬空位移动到 `hover - DIAN_JIN_DEPTH_MM` 再返回。
+非力控分支使用相同的上端、下端、抬起顺序完成每轮位置动作。
 
 ### 分筋
 
 `execute_fen_jin(frame)`：
 
 1. 到悬空位并确认卸力。
-2. 中心贴近到目标力并保压。
-3. 按 `FT_FEN_JIN_REPEAT_COUNT` 重复执行分筋轮次；每轮依次移动到 `+LASTTIME_FORCE_FEN_LATERAL_MM`、`-LASTTIME_FORCE_FEN_LATERAL_MM`、`0`，每个位置保压 `LASTTIME_FORCE_FEN_DWELL_S`。
-4. 回悬空位并确认卸力。
+2. 在中心贴近到目标力，但不在中心保压停顿。
+3. 默认调用一次 `ServoCartForceFenJin`：整套轮次共用同一个
+   `ServoMoveStart` / `ServoMoveEnd` 会话，路径从中心进入上端，此后只在上、下端点间
+   连续往复并结束于下端。中点以最大拨动速度穿过；正负端点采用位置、速度、加速度
+   连续的曲线立即反向且不驻留；伺服周期内持续读取六维力、检查法向力/切向力/力矩，
+   并沿接触法向补偿压力。
+4. 整套拨动完成后从下端直接抬回悬空位；GUI/语音的暂停或停止在安全抬起后生效。
+5. 控制服务不支持新命令时，执行前自动回退旧的逐端点运动；安全故障或运动状态不明时
+   不允许位置运动回退。
+6. 回悬空位并确认卸力。
+
+设置 `FT_CONTINUOUS_FEN_JIN=0` 会使用逐端点兜底流程：每轮只移动到
+`+LASTTIME_FORCE_FEN_LATERAL_MM` 和 `-LASTTIME_FORCE_FEN_LATERAL_MM`，只在上下端点保压，
+中点仍不停顿，也不会逐轮回中心。
 
 非力控分支用 `FEN_JIN_LATERAL_MM` 在悬空位左右移动。
 
@@ -570,7 +596,9 @@ robots/fairino/ft_agent_state/current_control.json
 - `BACK_MIN_DEPTH_RATIO`
 - `BACK_LINE_TRIM_NECK_RATIO`
 - `BACK_LINE_TRIM_TAIL_RATIO`
-- `THIGH_SIDE`
+- `THIGH_OUTER_SIDE`
+- `THIGH_INNER_SIDE`
+- `THIGH_SIDE`（兼容旧的全局覆盖）
 - `THIGH_OFFSET_MM`
 - `THIGH_DIRECTION`
 - `THIGH_FLIP_DIRECTION`
@@ -622,10 +650,10 @@ robots/fairino/ft_agent_state/current_control.json
 
 ## 维护注意事项
 
-1. 姿态开关以 `FT_KEEP_CURRENT_ORIENTATION` 为准，同时兼容旧变量 `LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION`；`run_lasttime_ros2.sh` 默认启用保持当前 TCP 姿态。
+1. 通用姿态开关以 `FT_KEEP_CURRENT_ORIENTATION` 为准，同时兼容旧变量 `LASTTIME_FORCE_KEEP_CURRENT_ORIENTATION`；`run_lasttime_ros2.sh` 默认启用保持当前 TCP 姿态。背部的 `BACK_FOLLOW_LOCAL_NORMAL=1` 优先级更高，会改为逐点跟随局部法向。
 2. `run_lasttime_ros2.sh` 会为 `ft.py` 设置 `HOVER_HEIGHT_MM=50.0`，但 `ft.py` 实际使用 `BACK_HOVER_HEIGHT_MM` 和 `THIGH_HOVER_HEIGHT_MM`。调整悬空高度时应改这两个变量。
 3. 腿部内侧模式不是独立的内侧检测模型，而是在外侧中线检测结果上跳过前若干点。
-4. `Ros2ForceController.start()` 和 `_ft_control_cmd()` 是可用封装，但当前动作序列没有调用 `start()`。如果未来改为硬件 `FT_Control` 闭环，需要重新审查软件贴近和保压逻辑的叠加关系。
+4. `Ros2ForceController.start()` 和 `_ft_control_cmd()` 是可用封装，但当前动作序列没有调用 `start()`；连续贴近和连续拨动命令各自在伺服会话内读取六维力并做法向补偿，因此不依赖旧 `FT_Control.active` 状态。如果未来改为硬件 `FT_Control` 闭环，需要重新审查两套力补偿的叠加关系。
 5. 所有运动命令都依赖 `nonrt_state_data` 中字段命名。如果 FAIRINO ROS 2 消息字段变更，需同步 `_state_pose()`、`_state_joints_deg()` 和 `read()`。
 6. `FT_CONTINUE_ON_POINT_ERROR=1` 会把部分点失败降级为跳过。调试精度或验收流程时建议设为 `0`，让问题尽早暴露。
 7. 小智检测工具是异步启动：`success=true` 不是检测完成，应以后续 `status=detected` 和 `trajectory_path` 为准。

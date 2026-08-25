@@ -54,10 +54,13 @@ SET_ROBOT_SPEED_ON_START = os.environ.get("CALIB_SET_ROBOT_SPEED", "0").strip().
 MIN_NEW_POINT_DIST_M = 0.01   # 与历史最近点至少 1cm
 MIN_SPAN_M = 0.08             # 最小空间跨度 8cm
 
-# 法兰 -> ArUco 中心 偏置（工具坐标系，单位：米）
-# 你给的数据是 137.356mm，且说明“沿末端水平向前”：
-# 这里按工具 +X 方向处理。若方向相反改为 -0.137356。
-FLANGE_TO_ARUCO_TOOL_M = np.array([0.137356, 0.0, 0.0], dtype=np.float64)
+# 法兰 -> ArUco 中心偏置（工具坐标系，单位：米）。当前采样数据验证
+# ArUco 中心位于法兰工具 +X 方向；可通过环境变量覆盖以适配其他夹具。
+FLANGE_TO_ARUCO_X_M = float(os.environ.get("CALIB_FLANGE_TO_ARUCO_X_M", "0.137356"))
+FLANGE_TO_ARUCO_TOOL_M = np.array(
+    [FLANGE_TO_ARUCO_X_M, 0.0, 0.0],
+    dtype=np.float64,
+)
 
 
 def estimate_rigid_transform(cam_pts, robot_pts):
@@ -510,6 +513,7 @@ class ArucoCalibrator:
                         "aruco_dict": ARUCO_DICT_NAME,
                         "aruco_id": ARUCO_ID,
                         "aruco_size_m": ARUCO_MARKER_SIZE_M,
+                        "flange_to_aruco_tool_m": FLANGE_TO_ARUCO_TOOL_M.tolist(),
                         "point_pairs": len(self.cam_pts),
                         "rmse_m": rmse,
                         "inlier_count": len(inliers),
@@ -521,10 +525,19 @@ class ArucoCalibrator:
                     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
                         json.dump(out_main, f, ensure_ascii=False, indent=2)
                     with open(PAIR_LOG_FILE, "w", encoding="utf-8") as f:
-                        json.dump({"pairs": self.pair_log}, f, ensure_ascii=False, indent=2)
+                        json.dump(
+                            {
+                                "flange_to_aruco_tool_m": FLANGE_TO_ARUCO_TOOL_M.tolist(),
+                                "pairs": self.pair_log,
+                            },
+                            f,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
 
                     report = {
                         "timestamp": ts,
+                        "flange_to_aruco_tool_m": FLANGE_TO_ARUCO_TOOL_M.tolist(),
                         "rmse_m": rmse,
                         "outlier_threshold_m": th,
                         "inlier_indices": inliers,

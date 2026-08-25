@@ -17,6 +17,7 @@ CALIBRATION_DIR="${ROOT_DIR}/shared/calibration"
 CALIBRATION_SCRIPT="${CALIBRATION_DIR}/calibrate_camera_to_robot_aruco.py"
 CALIBRATION_PYTHON="${CALIBRATION_PYTHON:-${ROOT_DIR}/env/.venv/bin/python}"
 BACK_LINE_ADJUSTER="${FAIRINO_DIR}/adjust_back_line_offset.py"
+DETECTION_VIEWER="${FAIRINO_DIR}/detection_viewer.py"
 FT_AGENT_STATE_DIR="${FAIRINO_DIR}/ft_agent_state"
 FT_AGENT_STATE_FILE="${FT_AGENT_STATE_DIR}/current_session.json"
 FT_AGENT_CONTROL_FILE="${FT_AGENT_STATE_DIR}/current_control.json"
@@ -56,12 +57,15 @@ Usage:
   ./massage force-monitor Open the read-only force sensor monitor
   ./massage calibrate  Start RealSense + ArUco camera-to-robot calibration
   ./massage adjust-lines Open the live four-line offset editor
+  ./massage detect TARGET Continuously show an OpenCV detection scene
   ./massage camera-check Ensure RealSense is attached and readable
   ./massage record-home Record current TCP pose as start/stop return pose
   ./massage home        Move to recorded start/stop return pose
   ./massage help       Show this help
 
 Notes:
+  detect targets: back, thigh, thigh-inner (aliases: leg, inner-thigh).
+  detect is vision-only: q/Esc exits; it never saves a trajectory or moves the robot.
   start runs ft.py in the foreground after ROS2 probe passes.
   start and stop return to the recorded pose when MASSAGE_HOME_ON_START/STOP is enabled.
   gui returns to the recorded pose before opening py-xiaozhi when MASSAGE_HOME_ON_GUI_START is enabled.
@@ -1193,6 +1197,57 @@ run_back_line_adjuster() {
   exec "${PYTHON_BIN}" "${BACK_LINE_ADJUSTER}" "$@"
 }
 
+run_detection_viewer() {
+  local target="${1:-}"
+  if [[ -z "${target}" || "${target}" == "help" || "${target}" == "-h" || "${target}" == "--help" ]]; then
+    cat <<'EOF'
+Usage:
+  ./massage detect back
+  ./massage detect thigh
+  ./massage detect thigh-inner
+
+Aliases:
+  thigh:       outer, leg, thigh-outer, outer-thigh
+  thigh-inner: inner, leg-inner, inner-leg, inner-thigh
+
+The viewer runs until q/Esc is pressed or its window is closed.
+It does not save a trajectory and does not connect to or move the robot.
+EOF
+    [[ -n "${target}" ]] && return 0
+    return 2
+  fi
+
+  target="${target,,}"
+  target="${target//_/-}"
+  case "${target}" in
+    back|spine|thigh|outer|thigh-outer|outer-thigh|leg|leg-outer|thigh-inner|inner|inner-thigh|leg-inner|inner-leg)
+      ;;
+    *)
+      echo "未知检测目标: ${target}" >&2
+      echo "支持: back, thigh, thigh-inner" >&2
+      return 2
+      ;;
+  esac
+
+  if [[ ! -f "${DETECTION_VIEWER}" ]]; then
+    echo "找不到持续检测画面程序: ${DETECTION_VIEWER}" >&2
+    return 1
+  fi
+  if ! ensure_realsense_attached; then
+    echo "检测画面启动：RealSense 未就绪。" >&2
+    return 1
+  fi
+
+  shift
+  setup_ros_env
+  echo "启动纯视觉 OpenCV 检测画面: ${target}"
+  echo "按 q 或 Esc 退出；不会保存轨迹，不会连接或移动机械臂。"
+  cd "${FAIRINO_DIR}"
+  export PYTHONUNBUFFERED=1
+  export PYTHONPATH="${FAIRINO_DIR}:${ROOT_DIR}/shared/vision:${PYTHONPATH:-}"
+  exec "${PYTHON_BIN}" "${DETECTION_VIEWER}" "${target}" "$@"
+}
+
 run_force_monitor() {
   local monitor_script="${FAIRINO_DIR}/force_monitor_gui.py"
   if [[ ! -f "${monitor_script}" ]]; then
@@ -1251,6 +1306,9 @@ main() {
       ;;
     adjust-lines)
       run_back_line_adjuster "$@"
+      ;;
+    detect)
+      run_detection_viewer "$@"
       ;;
     camera-check)
       ensure_realsense_attached

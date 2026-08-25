@@ -10,5 +10,8 @@ export HOVER_HEIGHT_MM="${HOVER_HEIGHT_MM:-50.0}"
 # posture.  Keep the lower-level ft.py default opt-in so standalone/manual
 # runs remain conservative, but enable the validated posture for this runner.
 export BACK_POSTURE_SEED_ENABLE="${BACK_POSTURE_SEED_ENABLE:-1}"
+# Follow each detected back point's local plane while retaining the validated
+# high-elbow config-6 branch from the posture seed.
+export BACK_FOLLOW_LOCAL_NORMAL="${BACK_FOLLOW_LOCAL_NORMAL:-1}"
 
 exec "${SCRIPT_DIR}/run_lasttime_ros2.sh" "$@"

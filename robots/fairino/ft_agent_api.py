@@ -32,6 +32,9 @@ AGENT_FORCE_READING_RETRIES = max(1, int(os.environ.get("FT_AGENT_FORCE_READING_
 AGENT_FORCE_TELEMETRY_HOST = os.environ.get("FT_AGENT_FORCE_TELEMETRY_HOST", "127.0.0.1")
 AGENT_FORCE_TELEMETRY_PORT = int(os.environ.get("FT_AGENT_FORCE_TELEMETRY_PORT", "45822"))
 AGENT_FORCE_TELEMETRY_HZ = max(1.0, float(os.environ.get("FT_AGENT_FORCE_TELEMETRY_HZ", "20.0")))
+CAMERA_TO_ROBOT_FILE = (
+    Path(ft.__file__).resolve().parents[2] / "shared" / "calibration" / "camera_to_robot.json"
+)
 
 
 class MassageExecutionInterrupted(RuntimeError):
@@ -358,6 +361,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             if not self.capture_trajectory():
                 return False
             self._annotate_back_depth_diagnostics()
+            if not self._filter_back_trajectory_quality():
+                return False
             return True
         finally:
             if display:
@@ -393,7 +398,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 "raw_confirmation_json": str(self.last_raw_confirmation_path)
                 if self.last_raw_confirmation_path is not None
                 else None,
-                "thigh_side": ft.THIGH_SIDE,
+                "thigh_side": ft._thigh_side_for_massage_target(self.massage_target),
                 "thigh_offset_mm": float(thigh_offset_mm),
                 "thigh_line_shift_mm": float(thigh_line_shift_mm),
                 "thigh_direction": ft.THIGH_DIRECTION,
@@ -734,7 +739,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 repeat_idx,
                 0,
             )
-            action_label = "点筋小幅分筋" if use_small_fen else "点筋"
+            action_label = "点筋小幅上下拨动" if use_small_fen else "点筋"
             self.update_preview_status(f"{action_label} {round_text}", frame.get("index"))
 
             if ft.LASTTIME_ROS2_FORCE:
@@ -752,32 +757,40 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     if not reached:
                         return False
                     if use_small_fen:
-                        offset, ok = self._hold_target_force(
-                            frame,
-                            0.0,
-                            offset,
-                            ft.FORCE_FEN_DWELL_S,
-                            f"{action_label}中心保压 {round_text}",
+                        request = self._agent_control_checkpoint(
+                            message=f"{action_label}上下连续拨动 {round_text}: 准备运动",
+                            safe_to_pause=False,
                         )
-                        if not ok:
+                        if request in {"pause_pending", "stop_pending"}:
                             return False
-                        for label, split_offset in (
-                            (f"{action_label}偏移+ {round_text}", small_fen_lateral_mm),
-                            (f"{action_label}偏移- {round_text}", -small_fen_lateral_mm),
-                            (f"{action_label}回中心 {round_text}", 0.0),
-                        ):
-                            pose = self._pose_from_frame_offset(frame, offset, split_offset)
-                            if not self._move_force_pose_checked(pose, label):
-                                return False
-                            offset, ok = self._hold_target_force(
-                                frame,
-                                split_offset,
-                                offset,
-                                ft.FORCE_FEN_DWELL_S,
-                                f"{label}保压",
-                            )
+                        continuous_result = self._continuous_fen_round(
+                            frame,
+                            offset,
+                            f"{action_label}上下连续拨动 {round_text}",
+                            1,
+                            amplitude_mm=small_fen_lateral_mm,
+                        )
+                        if continuous_result is not None:
+                            offset, ok = continuous_result
                             if not ok:
                                 return False
+                        else:
+                            for label, split_offset in (
+                                (f"{action_label}上端 {round_text}", small_fen_lateral_mm),
+                                (f"{action_label}下端 {round_text}", -small_fen_lateral_mm),
+                            ):
+                                pose = self._pose_from_frame_offset(frame, offset, split_offset)
+                                if not self._move_force_pose_checked(pose, label):
+                                    return False
+                                offset, ok = self._hold_target_force(
+                                    frame,
+                                    split_offset,
+                                    offset,
+                                    ft.FORCE_FEN_DWELL_S,
+                                    f"{label}保压",
+                                )
+                                if not ok:
+                                    return False
                     else:
                         offset, ok = self._hold_target_force(
                             frame,
@@ -817,9 +830,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
 
             if use_small_fen:
                 for label, split_offset in (
-                    (f"点筋小幅分筋偏移+ {round_text}", small_fen_lateral_mm),
-                    (f"点筋小幅分筋偏移- {round_text}", -small_fen_lateral_mm),
-                    (f"点筋小幅分筋回中心 {round_text}", 0.0),
+                    (f"点筋小幅上下拨动上端 {round_text}", small_fen_lateral_mm),
+                    (f"点筋小幅上下拨动下端 {round_text}", -small_fen_lateral_mm),
                 ):
                     self._agent_control_checkpoint(
                         message=f"{label}: 准备运动",
@@ -850,14 +862,14 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     blendT=ft.BLEND_BLOCKING,
                 )
                 if ret != 0:
-                    print(f"    警告：点筋小幅分筋{round_text}回到悬空位失败 (err={ret})")
+                    print(f"    警告：点筋小幅上下拨动{round_text}回到悬空位失败 (err={ret})")
                     return False
                 next_stage, next_action, next_point, next_repeat, next_step = self._next_resume_after_repeat(
                     "dian_jin",
                     repeat_idx,
                 )
                 self._agent_control_checkpoint(
-                    message=f"点筋小幅分筋{round_text}: 已回到悬空位，可暂停",
+                    message=f"点筋小幅上下拨动{round_text}: 已回到悬空位，可暂停",
                     safe_to_pause=True,
                     next_stage=next_stage,
                     next_action=next_action,
@@ -913,9 +925,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         hover_pose = self._pose_from_frame_offset(frame, -self.hover_height_mm)
         repeat_count = int(ft.FEN_JIN_REPEAT_COUNT)
         force_steps = (
-            ("分筋偏移+", ft.FORCE_FEN_LATERAL_MM),
-            ("分筋偏移-", -ft.FORCE_FEN_LATERAL_MM),
-            ("分筋回中心", 0.0),
+            ("分筋上端", ft.FORCE_FEN_LATERAL_MM),
+            ("分筋下端", -ft.FORCE_FEN_LATERAL_MM),
         )
         start_repeat_index = max(0, min(repeat_count, int(start_repeat_index or 0)))
         start_step_index = max(0, min(len(force_steps) - 1, int(start_step_index or 0)))
@@ -942,60 +953,89 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 offset, reached = self._approach_to_target_force(frame, "分筋中心")
                 if not reached:
                     return False
-                offset, ok = self._hold_target_force(
-                    frame,
-                    0.0,
-                    offset,
-                    ft.FORCE_FEN_DWELL_S,
-                    "分筋中心保压",
-                )
-                if not ok:
-                    return False
                 if self._agent_pause_pending:
                     return False
 
-                for repeat_idx in range(start_repeat_index, repeat_count):
-                    round_text = f"{repeat_idx + 1}/{repeat_count}"
-                    first_step = start_step_index if repeat_idx == start_repeat_index else 0
-                    for step_idx in range(first_step, len(force_steps)):
-                        label_prefix, split_offset = force_steps[step_idx]
-                        label = f"{label_prefix} {round_text}"
-                        self._set_agent_control_context(
-                            "point_actions",
-                            "fen_jin",
-                            self._agent_control_point_index,
-                            repeat_idx,
-                            step_idx,
-                        )
-                        next_stage = "point_actions"
-                        next_action = "fen_jin"
-                        next_point = self._agent_control_point_index
-                        next_repeat = repeat_idx
-                        next_step = step_idx
-                        pose = self._pose_from_frame_offset(frame, offset, split_offset)
-                        if not self._move_force_pose_checked(pose, label):
-                            return False
-                        offset, ok = self._hold_target_force(
-                            frame,
-                            split_offset,
-                            offset,
-                            ft.FORCE_FEN_DWELL_S,
-                            f"{label}保压",
-                        )
+                remaining_repeats = repeat_count - start_repeat_index
+                continuous_completed = False
+                if start_step_index == 0:
+                    request = self._agent_control_checkpoint(
+                        message=f"分筋上下连续拨动 {remaining_repeats}轮: 准备运动",
+                        safe_to_pause=False,
+                    )
+                    if request in {"pause_pending", "stop_pending"}:
+                        return False
+                    continuous_result = self._continuous_fen_round(
+                        frame,
+                        offset,
+                        "分筋上下连续拨动",
+                        remaining_repeats,
+                    )
+                    if continuous_result is not None:
+                        offset, ok = continuous_result
                         if not ok:
                             return False
-                        if self._agent_pause_pending:
-                            return False
-                        if step_idx + 1 < len(force_steps):
-                            next_step = step_idx + 1
-                        else:
-                            (
-                                next_stage,
-                                next_action,
-                                next_point,
-                                next_repeat,
-                                next_step,
-                            ) = self._next_resume_after_repeat("fen_jin", repeat_idx)
+                        (
+                            next_stage,
+                            next_action,
+                            next_point,
+                            next_repeat,
+                            next_step,
+                        ) = self._next_resume_after_repeat("fen_jin", repeat_count - 1)
+                        self._agent_control_checkpoint(
+                            message=f"分筋上下连续拨动 {remaining_repeats}轮: 运动完成",
+                            safe_to_pause=False,
+                            next_stage=next_stage,
+                            next_action=next_action,
+                            next_point_index=next_point,
+                            next_repeat_index=next_repeat,
+                            next_step_index=next_step,
+                        )
+                        continuous_completed = True
+
+                if not continuous_completed:
+                    for repeat_idx in range(start_repeat_index, repeat_count):
+                        round_text = f"{repeat_idx + 1}/{repeat_count}"
+                        first_step = start_step_index if repeat_idx == start_repeat_index else 0
+                        for step_idx in range(first_step, len(force_steps)):
+                            label_prefix, split_offset = force_steps[step_idx]
+                            label = f"{label_prefix} {round_text}"
+                            self._set_agent_control_context(
+                                "point_actions",
+                                "fen_jin",
+                                self._agent_control_point_index,
+                                repeat_idx,
+                                step_idx,
+                            )
+                            next_stage = "point_actions"
+                            next_action = "fen_jin"
+                            next_point = self._agent_control_point_index
+                            next_repeat = repeat_idx
+                            next_step = step_idx
+                            pose = self._pose_from_frame_offset(frame, offset, split_offset)
+                            if not self._move_force_pose_checked(pose, label):
+                                return False
+                            offset, ok = self._hold_target_force(
+                                frame,
+                                split_offset,
+                                offset,
+                                ft.FORCE_FEN_DWELL_S,
+                                f"{label}保压",
+                            )
+                            if not ok:
+                                return False
+                            if self._agent_pause_pending:
+                                return False
+                            if step_idx + 1 < len(force_steps):
+                                next_step = step_idx + 1
+                            else:
+                                (
+                                    next_stage,
+                                    next_action,
+                                    next_point,
+                                    next_repeat,
+                                    next_step,
+                                ) = self._next_resume_after_repeat("fen_jin", repeat_idx)
             except MassageExecutionInterrupted:
                 raise
             except Exception as exc:
@@ -1028,16 +1068,15 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         )
 
         non_force_steps = (
-            ("分筋偏移+", positive_pose, False),
-            ("分筋偏移-", negative_pose, False),
-            ("分筋回悬空位", hover_pose, True),
+            ("分筋上端", positive_pose),
+            ("分筋下端", negative_pose),
         )
         start_step_index = max(0, min(len(non_force_steps) - 1, int(start_step_index or 0)))
         for repeat_idx in range(start_repeat_index, repeat_count):
             round_text = f"{repeat_idx + 1}/{repeat_count}"
             first_step = start_step_index if repeat_idx == start_repeat_index else 0
             for step_idx in range(first_step, len(non_force_steps)):
-                label_prefix, pose, safe_to_pause = non_force_steps[step_idx]
+                label_prefix, pose = non_force_steps[step_idx]
                 label = f"{label_prefix} {round_text}"
                 self._set_agent_control_context(
                     "point_actions",
@@ -1046,11 +1085,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     repeat_idx,
                     step_idx,
                 )
-                if safe_to_pause:
-                    next_stage, next_action, next_point, next_repeat, next_step = (
-                        self._next_resume_after_repeat("fen_jin", repeat_idx)
-                    )
-                elif step_idx + 1 < len(non_force_steps):
+                if step_idx + 1 < len(non_force_steps):
                     next_stage = "point_actions"
                     next_action = "fen_jin"
                     next_point = self._agent_control_point_index
@@ -1081,7 +1116,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     return False
                 self._agent_control_checkpoint(
                     message=f"{label}: 运动完成",
-                    safe_to_pause=safe_to_pause,
+                    safe_to_pause=False,
                     next_stage=next_stage,
                     next_action=next_action,
                     next_point_index=next_point,
@@ -1089,6 +1124,28 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     next_step_index=next_step,
                 )
                 time.sleep(0.2)
+        next_stage, next_action, next_point, next_repeat, next_step = (
+            self._next_resume_after_repeat("fen_jin", repeat_count - 1)
+        )
+        ret = self.robot.MoveCart(
+            desc_pos=hover_pose,
+            tool=ft.ROS2_TOOL,
+            user=ft.ROS2_USER,
+            vel=ft.MOVE_VEL_SLOW,
+            blendT=ft.BLEND_BLOCKING,
+        )
+        if ret != 0:
+            print(f"    警告：分筋结束回悬空位失败 (err={ret})")
+            return False
+        self._agent_control_checkpoint(
+            message="分筋结束: 已回到悬空位，可暂停",
+            safe_to_pause=True,
+            next_stage=next_stage,
+            next_action=next_action,
+            next_point_index=next_point,
+            next_repeat_index=next_repeat,
+            next_step_index=next_step,
+        )
         return True
 
     def execute_shun_jin(self, frames=None, start_index=0, control=None):
@@ -1453,7 +1510,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
         point_actions = [action for action in actions if action in {"dian_jin", "fen_jin"}]
         run_shun = "shun_jin" in actions
         dian_action_text = (
-            "点筋小幅分筋"
+            "点筋小幅上下拨动"
             if ft.DIAN_JIN_MODE in {"small_fen", "small-fen", "small_split", "split", "fen"}
             else "点筋"
         )
@@ -1579,7 +1636,12 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     print("确认暂停悬空位失败，停止继续，避免安全高度抬升转场")
                     return False
             else:
-                if not self._move_to_work_pose(first_pose, "移动到起始位置", ft.TRANSIT_MOVE_VEL_FAST):
+                if not self._move_to_start_frame(
+                    frames,
+                    first_index,
+                    "移动到起始位置",
+                    ft.TRANSIT_MOVE_VEL_FAST,
+                ):
                     return False
 
             if point_actions and start_stage == "point_actions" and start_point_index < len(frames):
@@ -1744,7 +1806,6 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 shun_start_index = start_point_index if start_stage == "shun_jin" else 0
                 shun_start_index = min(max(0, shun_start_index), len(shun_frames) - 1)
                 shun_first_frame = shun_frames[shun_start_index]
-                shun_first_pose = self._pose_from_frame_offset(shun_first_frame, -self.hover_height_mm)
                 self.update_preview_status("回到顺筋起点", shun_first_frame.get("index", 0))
                 self._set_agent_control_context("shun_jin", "move_to_shun_start", shun_start_index)
                 self._control_checkpoint(
@@ -1757,7 +1818,12 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                     message="准备回到顺筋起点",
                 )
                 with ft._RobotMotionSpeedScaleOverride(ft.SHUN_JIN_MOTION_SPEED_SCALE):
-                    if not self._move_to_work_pose(shun_first_pose, "回到顺筋起点", ft.MOVE_VEL_FAST):
+                    if not self._move_to_start_frame(
+                        shun_frames,
+                        shun_start_index,
+                        "回到顺筋起点",
+                        ft.MOVE_VEL_FAST,
+                    ):
                         print("    警告：回到顺筋起点失败，仍将尝试顺筋")
                         if not ft.FT_CONTINUE_ON_POINT_ERROR:
                             return False
@@ -1928,6 +1994,14 @@ class FTMassageAgentInterface:
     def load_trajectory(self, path, raise_on_error=False):
         try:
             path = Path(path)
+            if (
+                CAMERA_TO_ROBOT_FILE.is_file()
+                and path.stat().st_mtime_ns < CAMERA_TO_ROBOT_FILE.stat().st_mtime_ns
+            ):
+                raise RuntimeError(
+                    "轨迹生成时间早于当前相机标定，禁止执行旧机器人坐标；"
+                    f"请重新检测后再按摩: {path}"
+                )
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
@@ -1941,6 +2015,8 @@ class FTMassageAgentInterface:
             self.demo.massage_points_mm = data.get("points_mm") or [
                 frame.get("point_mm") for frame in frames if frame.get("point_mm") is not None
             ]
+            if not self.demo._filter_back_trajectory_quality():
+                raise RuntimeError("背部轨迹异常点过多，请重新检测后再按摩")
             if "hover_height_mm" in data:
                 self.demo.hover_height_mm = float(data["hover_height_mm"])
             if "force_target_n" in data:

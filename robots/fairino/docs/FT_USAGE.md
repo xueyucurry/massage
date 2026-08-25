@@ -202,10 +202,11 @@ cd /path/to/massage
 1. 移动到安全高度。
 2. 根据腿部轨迹可达性做姿态筛选和必要的法向角调整。
 3. 初始化六维力传感器和力控通道。
-4. 移动到第一个采样点的悬空位。
+4. 执行前检查到首点的完整高位转场。首点不能直接进入时，从其他可达采样点进入，
+   沿 60mm 安全悬空轨迹返回首点，再下降到正常悬空位；按摩点不会因此被删除或重排。
 5. 对每个采样点执行点筋动作和分筋：
-   - 点筋动作：默认已替换为小幅分筋。从悬空位沿局部法向贴近，达到目标力后沿分筋轴做小幅正向、反向、回中心移动，默认每个点执行 3 次。
-   - 分筋：贴近到目标力后，沿分筋轴正向、反向、回中心移动并保压，默认每个点执行 3 轮。
+   - 点筋动作：默认采用小幅上下连续拨动。每轮都从悬空位沿局部法向贴近，达到目标力后以正式分筋一半左右的幅度连续拨到上端、下端，轮内没有端点保压，再抬回悬空位；仍保持点筋“一轮一贴近、一轮一抬起”的手法，默认每个点执行 3 次。
+   - 分筋：贴近到目标力后，在上、下端点之间连续往复；中点只被经过、不停顿，也不再逐轮回中心，默认每个点执行 3 轮。
 6. 回到顺筋起点。
 7. 执行顺筋：沿采样点序列移动，每到一个点都会先按目标力重新贴合，再做目标力微调保压。
 8. 返回安全位置。
@@ -366,8 +367,9 @@ JSON 主要字段：
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `BACK_HOVER_HEIGHT_MM` | `20.0` | 背部模式悬空高度 |
-| `BACK_POSTURE_SEED_ENABLE` | `0` | 启用 `back_posture_seed.json` 中经过逐点逆解验证的背部固定朝向和构型；底层手动运行默认关闭，GUI/语音执行脚本默认开启 |
-| `BACK_POSTURE_SEED_FILE` | `robots/fairino/back_posture_seed.json` | 背部固定朝向、构型和验证来源 |
+| `BACK_POSTURE_SEED_ENABLE` | `0` | 启用 `back_posture_seed.json` 中经过验证的背部高肘构型；底层手动运行默认关闭，GUI/语音执行脚本默认开启 |
+| `BACK_FOLLOW_LOCAL_NORMAL` | `1` | 背部每个按摩点使用各自的局部平面法向和 RPY，并忽略全局 `FT_KEEP_CURRENT_ORIENTATION`；设为 `0` 才使用种子固定朝向 |
+| `BACK_POSTURE_SEED_FILE` | `robots/fairino/back_posture_seed.json` | 背部高肘构型、可选固定朝向和验证来源 |
 | `BACK_POSTURE_CONFIG_TOL_DEG` | `2.0` | 当前关节必须与种子构型逆解匹配的最大误差，超出即禁止运动 |
 | `BACK_TRAJECTORY_PROBE_ONLY` | `0` | `1` 时只遍历背部悬空轨迹，不接触、不启动力控、不执行按摩动作 |
 | `BACK_TRAJECTORY_PROBE_CLEARANCE_MM` | `60.0` | 背部悬空探针与视觉表面的工具端间隙 |
@@ -376,7 +378,14 @@ JSON 主要字段：
 | `BACK_LINE_TRIM_NECK_RATIO` | `0.08` | 背部采样线靠颈部端缩短比例 |
 | `BACK_LINE_TRIM_TAIL_RATIO` | `0.04` | 背部采样线靠尾端缩短比例 |
 | `THIGH_HOVER_HEIGHT_MM` | `20.0` | 腿部模式悬空高度 |
-| `THIGH_SIDE` | `right` | 腿部检测侧，可为 `nearest`、`auto`、`left`、`right` |
+| `THIGH_OUTER_SIDE` | `right` | 大腿外侧模式检测腿，可为 `nearest`、`auto`、`left`、`right` |
+| `THIGH_INNER_SIDE` | `left` | 大腿内侧模式检测腿；默认强制左腿，左腿关键点不足时检测失败，不回退到右腿 |
+| `THIGH_SIDE` | 空 | 兼容旧配置；设置后同时覆盖内、外侧默认腿，优先级低于两个目标专用变量 |
+| `THIGH_OUTER_ROTATION` | `none` | 大腿外侧送入 RTMPose 前的画面旋转方向 |
+| `THIGH_INNER_ROTATION` | `cw` | 大腿内侧默认顺时针旋转画面后检测，适配横躺且部分遮挡的里面一条腿 |
+| `THIGH_OUTER_TRY_ROTATIONS` | `0` | 外侧是否尝试 `none/ccw/cw` 并选置信度最高结果 |
+| `THIGH_INNER_TRY_ROTATIONS` | `0` | 内侧是否尝试 `none/ccw/cw` 并选置信度最高结果；默认单次 `cw` 以保持帧率 |
+| `THIGH_ROTATION` / `THIGH_TRY_ROTATIONS` | 空 / `0` | 兼容旧配置；显式设置后作为内、外侧旋转配置的回退值 |
 | `THIGH_OFFSET_MM` | `30.0` | 从髋膝线偏移生成按摩线的距离 |
 | `THIGH_DIRECTION` | `image-down` | 偏移方向，可为 `outer`、`image-down`、`image-up`、`image-left`、`image-right` |
 | `THIGH_SAMPLE_POINTS` | `SAMPLE_POINTS` | 腿部采样点数 |
@@ -433,6 +442,11 @@ JSON 主要字段：
 | `FT_CONTINUOUS_FORCE_FILTER_ALPHA` | `0.35` | 仅用于速度分段的力值 EMA 系数；原始力仍用于目标和安全判定 |
 | `FT_CONTINUOUS_FORCE_TARGET_STABLE_SAMPLES` | `2` | 达到目标力所需连续原始采样数 |
 | `FT_CONTINUOUS_FORCE_TIMEOUT_S` | `20.0` | 单次连续贴近超时；超时和安全故障不会回退 `MoveCart` |
+| `FT_CONTINUOUS_FEN_JIN` | `1` | 整套分筋共用一次连续、力感知的 ServoMove 会话；中心只在首次进入时出现，往复期间不停顿 |
+| `FT_CONTINUOUS_FEN_CYCLE_S` | `1.0` | 每轮“上端→下端”的等效时长；整套动作按轮数连续执行 |
+| `FT_CONTINUOUS_FEN_HZ` | `125.0` | 连续分筋伺服频率 |
+| `FT_CONTINUOUS_FEN_NORMAL_KP_MM_PER_N_S` | `保压 KP × 监测频率` | 连续往复期间的法向压力补偿速度增益 |
+| `FT_CONTINUOUS_FEN_NORMAL_MAX_SPEED_MM_S` | `保压最大步长 × 监测频率` | 连续往复期间法向补偿的最大速度 |
 | `LASTTIME_FORCE_HOLD_KP_MM_PER_N` | `0.04` | 保压微调比例；启动脚本默认覆盖为 `0.02` |
 | `LASTTIME_FORCE_HOLD_MAX_STEP_MM` | `0.15` | 单次保压微调最大位移；启动脚本默认覆盖为 `0.08` |
 | `LASTTIME_FORCE_SHUN_RECONTACT` | `1` | 顺筋每个轨迹点是否按目标力重新贴合，避免末端点悬空 |
@@ -440,8 +454,8 @@ JSON 主要字段：
 | `FT_LIVE_FORCE_TARGET_MIN_N` | `1.0` | 运行中语音调整目标力的下限 |
 | `FT_LIVE_FORCE_TARGET_MAX_N` | `80.0` | 运行中语音调整目标力的上限 |
 | `FT_DIAN_JIN_REPEAT_COUNT` | `3` | 每个按摩点的点筋重复次数 |
-| `FT_DIAN_JIN_MODE` | `dian` | 点筋动作模式；默认执行真正点筋，只有显式设为 `small_fen` 才用小幅分筋替代原点按 |
-| `FT_DIAN_AS_SMALL_FEN_LATERAL_MM` | `min(分筋力控偏移*0.5, 6)` | 点筋替代小幅分筋的横向偏移 |
+| `FT_DIAN_JIN_MODE` | `small_fen` | 点筋动作模式；默认以小幅上下拨动完成每轮点筋，仍逐轮贴近和抬起；设为 `dian` 可恢复原点按动作 |
+| `FT_DIAN_AS_SMALL_FEN_LATERAL_MM` | `min(分筋力控偏移*0.5, 6)` | 点筋小幅上下拨动相对中点的单侧幅度 |
 | `FT_FEN_JIN_REPEAT_COUNT` | `3` | 每个按摩点的分筋重复轮数 |
 | `LASTTIME_FORCE_GUARD` | `0` | 是否启用 FAIRINO `FT_Guard` 碰撞守护 |
 | `LASTTIME_FORCE_ALLOW_SKIP_ZERO` | `1` | 校零失败但读数接近零点时是否允许继续 |
