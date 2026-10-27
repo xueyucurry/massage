@@ -4,7 +4,7 @@
 
 `ft.py` 是 FAIRINO 机械臂的 ROS 2 控制版恒力按摩演示入口。程序基于 RealSense 深度相机、背部膀胱经视觉检测、大腿 RTMPose 姿态检测、相机到机械臂标定矩阵和六维力传感器，实现轨迹锁定、轨迹保存、机械臂安全转场、贴近目标力、点筋小幅分筋、分筋、顺筋等动作。
 
-除手动 OpenCV 流程外，当前项目还提供顶层 `./massage` 快捷脚本和 `py-xiaozhi` 语音智能体。智能体通过 MCP 工具调用 `ft_agent_api.py`，可以语音完成检测、开始按摩、暂停、继续、停止、状态查询和运行中力度调整；小智 GUI 会显示检测/按摩状态、轨迹、进度和常用快捷指令。
+除手动 OpenCV 流程外，当前项目还提供顶层 `./massage` 快捷脚本和 `py-xiaozhi` 语音智能体。智能体通过 MCP 工具调用 `ft_agent_api.py`，可以语音或通过 MediaPipe 手势完成检测、开始按摩、暂停、继续、停止、状态查询和运行中力度调整；小智 GUI 会显示检测/按摩状态、轨迹、进度和常用快捷指令。
 
 当前已实现的按摩部位：
 
@@ -415,8 +415,8 @@ JSON 主要字段：
 | --- | --- | --- |
 | `LASTTIME_ROS2_FORCE` | `1` | 是否启用 ROS 2 版恒力贴近和保压流程 |
 | `LASTTIME_FORCE_N` | `30.0` | 背部目标力，单位 N |
-| `THIGH_OUTER_FORCE_N` | `50.0` | 大腿外侧目标力，单位 N |
-| `THIGH_INNER_FORCE_N` | `30.0` | 大腿内侧目标力，单位 N |
+| `THIGH_OUTER_FORCE_N` | `5.0` | 大腿外侧目标力，单位 N |
+| `THIGH_INNER_FORCE_N` | `5.0` | 大腿内侧目标力，单位 N |
 | `THIGH_FORCE_N` | 空 | 腿部外侧/内侧全局目标力覆盖，优先级低于上述分部位变量 |
 | `LASTTIME_THIGH_FORCE_N` | 空 | 腿部目标力备用覆盖变量 |
 | `LASTTIME_FORCE_SENSOR_BUS` | `1` | 六维力传感器总线编号 |

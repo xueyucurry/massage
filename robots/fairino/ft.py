@@ -20,8 +20,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # 直接改下面的数字即可。
 BACK_MASSAGE_FORCE_N = "10.0"          # 背部膀胱经
 BACK_SHUN_JIN_FORCE_N = "2.0"          # 背部膀胱经顺筋
-THIGH_OUTER_MASSAGE_FORCE_N = "50.0"   # 大腿外侧
-THIGH_INNER_MASSAGE_FORCE_N = "30.0"   # 大腿内侧
+THIGH_OUTER_MASSAGE_FORCE_N = "5.0"    # 大腿外侧
+THIGH_INNER_MASSAGE_FORCE_N = "5.0"    # 大腿内侧
 
 # ===== 用户常改：动作次数和速度 =====
 DIAN_JIN_REPEAT_DEFAULT = "3"           # 每个按摩点执行点筋次数
@@ -5747,6 +5747,7 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                         FORCE_SHUN_SEGMENT_LENGTH_MM,
                     )
                     motion_failed = False
+                    recontact_failed = False
                     for substep_index, motion_frame in enumerate(motion_frames):
                         substep_no = substep_index + 1
                         substep_count = len(motion_frames)
@@ -5812,18 +5813,50 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                                     f"    警告：顺筋点{point_no} 子段{substep_no}/{substep_count}"
                                     "卸力后未重新达到目标力"
                                 )
-                                safety_abort = True
+                                recontact_failed = True
                                 motion_failed = True
                                 break
 
                     if motion_failed:
                         skipped_points.append(point_no)
                         ok = False
+                        if recontact_failed:
+                            recovered = (
+                                last_hover_pose is not None
+                                and self._move_force_pose_checked(
+                                    last_hover_pose,
+                                    f"顺筋点{point_no}重新贴合失败回悬空位",
+                                    MOVE_VEL_SLOW,
+                                )
+                            )
+                            if not recovered:
+                                print(
+                                    f"    警告：顺筋点{point_no}重新贴合失败后回悬空位失败，"
+                                    "停止后续顺筋"
+                                )
+                                safety_abort = True
+                                break
+                            previous_contact_frame = None
+                            offset = -float(self.hover_height_mm)
+                            if not FT_CONTINUE_ON_POINT_ERROR:
+                                break
+                            print(
+                                f"    警告：顺筋点{point_no}重新贴合失败，"
+                                "已回悬空位，跳到下一个点重新寻找接触"
+                            )
+                            continue
                         if safety_abort or not FT_CONTINUE_ON_POINT_ERROR:
                             break
                         print(f"    警告：顺筋点{point_no}移动失败，跳过该点继续")
                         continue
-                    if FORCE_SHUN_RECONTACT:
+                    # After a segment recontact failure we deliberately reset the
+                    # path anchor and offset.  The next point must approach from
+                    # hover even when the optional per-point recontact is disabled.
+                    needs_start_recontact = (
+                        previous_contact_frame is None
+                        and offset <= -float(self.hover_height_mm) + 1e-6
+                    )
+                    if needs_start_recontact or FORCE_SHUN_RECONTACT:
                         offset, reached = self._approach_to_target_force(
                             frame,
                             f"顺筋贴近补偿 点{point_no}",
@@ -5834,7 +5867,23 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                             ok = False
                             if not FT_CONTINUE_ON_POINT_ERROR:
                                 break
-                            print(f"    警告：顺筋点{point_no}未重新达到目标力，跳过该点继续")
+                            recovered = (
+                                last_hover_pose is not None
+                                and self._move_force_pose_checked(
+                                    last_hover_pose,
+                                    f"顺筋点{point_no}重新贴合失败回悬空位",
+                                    MOVE_VEL_SLOW,
+                                )
+                            )
+                            if not recovered:
+                                safety_abort = True
+                                break
+                            previous_contact_frame = None
+                            offset = -float(self.hover_height_mm)
+                            print(
+                                f"    警告：顺筋点{point_no}未重新达到目标力，"
+                                "已回悬空位，跳到下一个点重新寻找接触"
+                            )
                             continue
                     offset, hold_ok = self._hold_target_force(
                         frame,
@@ -5857,8 +5906,6 @@ class LastTimeRos2Demo(_SdkLastTimeDemo):
                 if moved_count <= 0:
                     print("    警告：顺筋没有完成任何候选点")
                     ok = False
-                if FT_CONTINUE_ON_POINT_ERROR and skipped_points and not safety_abort:
-                    ok = True
             except Exception as exc:
                 print(f"    警告：顺筋力控失败 ({exc})")
                 ok = False

@@ -149,6 +149,49 @@ MCP `detect` 工具返回 `success=true` 只表示检测任务已启动，不表
 
 停止按摩会先请求执行进程停止并回到当前点局部悬空位，随后通过顶层 `./massage home` 回到 `massage_home_pose.json` 记录的起始位置。这个回位流程可以用 `FAIRINO_MASSAGE_RETURN_HOME_ON_STOP=0` 关闭。自然执行完成后也会默认回到记录的起始位置，可用 `FAIRINO_MASSAGE_RETURN_HOME_ON_COMPLETE=0` 关闭。
 
+## 手势控制
+
+`./massage gui` 启动的按摩会话默认开启 MediaPipe Gesture Recognizer 手势控制。它只在
+实际按摩执行或暂停期间读取手势摄像头，所有命令仍交给同一会话管理器，因此不会绕过
+已有的安全检查点、局部悬空撤离和回起始位流程。
+
+| 手势 | MediaPipe 分类 | 生效条件 | 动作 |
+| --- | --- | --- | --- |
+| 握拳 | `Closed_Fist` | 正在按摩 | 请求软暂停，在最近安全检查点保存进度 |
+| 竖拇指 | `Thumb_Up` | 已暂停且执行器已退出 | 从保存的点位继续 |
+| 张开手掌 | `Open_Palm` | 正在按摩、暂停中或已暂停 | 停止本次按摩；竖拇指不能重启已停止任务 |
+| 放下手、其他手型、未检测到手 | — | 任意 | 不产生状态切换 |
+
+为兼顾可用性与误触发保护，默认需要连续识别同一有效手势 3 帧，且一个命令触发后必须连续 4 帧
+无有效命令才会重新布防。分类得分默认至少为 `0.60`。模型默认为仓库根目录的
+`gesture_recognizer.task`；依赖已列入 `py-xiaozhi/requirements.txt`，首次部署后执行：
+
+```bash
+cd /path/to/massage/py-xiaozhi
+.venv-linux/bin/python -m pip install -r requirements.txt
+```
+
+默认读取 RealSense 的彩色流（按摩轨迹检测结束后才会打开，因此不会与检测阶段抢占
+相机）。可用以下环境变量改为专用 OpenCV 手势摄像头或打开调试画面：
+
+```bash
+FAIRINO_GESTURE_CAMERA=/dev/video4 ./massage gui
+FAIRINO_GESTURE_DISPLAY=1 ./massage gui
+FAIRINO_GESTURE_ENABLE=0 ./massage gui
+```
+
+可选参数：`FAIRINO_GESTURE_MODEL_PATH`、`FAIRINO_GESTURE_MIN_SCORE`、
+`FAIRINO_GESTURE_STABLE_FRAMES` 和 `FAIRINO_GESTURE_NEUTRAL_FRAMES`。若摄像头、模型
+、MediaPipe 或 `pyrealsense2` 不可用，按摩任务不会被中断；会话状态中的 `gesture_status` 和
+`gesture_message` 会说明原因。手势停止是普通软件停止，紧急情况仍必须使用实体急停。
+
+在开始按摩前，可运行 `./massage gesture-check` 打开纯相机预览，确认画面中的识别标签和
+`[recognized]` 输出。这个命令不连接、不控制机械臂；按 `q` 或 `Esc` 退出。
+
+`gesture_recognizer.task` 的内置分类包括 `Closed_Fist`、`Open_Palm` 和 `Thumb_Up`。若相机
+角度让内置分类器对握拳或张掌返回 `None`，系统会使用该识别器同时输出的手部关键点作保守兜底：
+仅将清晰的四指弯曲识别为暂停、四指伸展识别为停止；恢复仍只能由模型明确识别 `Thumb_Up` 触发。
+
 运行中力度调整通过同一个控制文件传递，`self.fairino_massage.adjust_force` 会写入一次性 `force_adjust.seq`，执行进程在最近 checkpoint 消费并同步 `force_target_n` 到状态文件。暂停期间执行线程已经退出，`adjust_force` 会直接更新会话状态里的 `force_target_n`，`resume` 会把这个目标力作为 `--force-target-n` 传给下一次执行进程。默认步长由 `FAIRINO_MASSAGE_FORCE_ADJUST_STEP_N=5.0` 控制，底层目标力会被限制在 `FT_LIVE_FORCE_TARGET_MIN_N` 到 `FT_LIVE_FORCE_TARGET_MAX_N` 范围内。带数值调整时方向优先，`softer + 10` 会按 `-10N` 处理。
 
 ## 状态语义

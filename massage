@@ -54,6 +54,7 @@ Usage:
   ./massage stop       Stop FAIRINO ROS2, MoveIt, and residual ft.py runner
   ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
   ./massage gui        Start py-xiaozhi GUI
+  ./massage gesture-check Open a camera-only hand-gesture preview (no robot motion)
   ./massage force-monitor Open the read-only force sensor monitor
   ./massage calibrate  Start RealSense + ArUco camera-to-robot calibration
   ./massage adjust-lines Open the live four-line offset editor
@@ -85,6 +86,7 @@ Environment:
   MASSAGE_HOME_SAFE_Z_MM=${MASSAGE_HOME_SAFE_Z_MM}
   MASSAGE_HOME_JOINT_TRANSITION=${MASSAGE_HOME_JOINT_TRANSITION}
   MASSAGE_HOME_ON_GUI_START=${MASSAGE_HOME_ON_GUI_START}
+  FAIRINO_GUI_REQUIRE_ROS2=${FAIRINO_GUI_REQUIRE_ROS2:-0}
   XIAOZHI_PYTHON=${XIAOZHI_PYTHON}
   XIAOZHI_PUSH_TO_TALK_ONLY=${XIAOZHI_PUSH_TO_TALK_ONLY:-1}
   XIAOZHI_MASSAGE_ONLY=${XIAOZHI_MASSAGE_ONLY:-1}
@@ -1060,6 +1062,7 @@ cleanup_xiaozhi_gui_startup() {
 }
 
 run_xiaozhi_gui() {
+  local ros2_ready=1
   if [[ ! -d "${XIAOZHI_DIR}" ]]; then
     echo "找不到 py-xiaozhi 目录: ${XIAOZHI_DIR}" >&2
     return 1
@@ -1084,15 +1087,24 @@ run_xiaozhi_gui() {
   fi
   setup_ros_env
   if ! restart_server_for_gui; then
-    echo "GUI 启动：ROS2 控制服务重启失败，停止启动小智 GUI。" >&2
-    return 1
+    if flag_enabled "${FAIRINO_GUI_REQUIRE_ROS2:-0}"; then
+      echo "GUI 启动：ROS2 控制服务重启失败，已按 FAIRINO_GUI_REQUIRE_ROS2 停止启动小智 GUI。" >&2
+      return 1
+    fi
+    ros2_ready=0
+    echo "GUI 启动：ROS2 控制服务未就绪；将以相机/语音预览模式启动。" >&2
+    echo "按摩和回位指令仍会被机器人状态检查拒绝，故障排除后再执行按摩。" >&2
   fi
 
   if home_pose_enabled "${MASSAGE_HOME_ON_GUI_START}"; then
-    start_moveit
-    if ! move_to_recorded_home "gui 启动回位"; then
-      echo "gui 启动回位失败，停止启动小智 GUI。" >&2
-      return 1
+    if [[ "${ros2_ready}" == "1" ]]; then
+      start_moveit
+      if ! move_to_recorded_home "gui 启动回位"; then
+        echo "gui 启动回位失败，停止启动小智 GUI。" >&2
+        return 1
+      fi
+    else
+      echo "GUI 启动：ROS2 未就绪，跳过自动回位。" >&2
     fi
   fi
 
@@ -1266,6 +1278,20 @@ run_force_monitor() {
   exec "${XIAOZHI_PYTHON}" "${monitor_script}" "$@"
 }
 
+run_gesture_check() {
+  if [[ ! -x "${XIAOZHI_PYTHON}" ]]; then
+    echo "找不到小智 GUI Python 环境: ${XIAOZHI_PYTHON}" >&2
+    return 1
+  fi
+  if ! ensure_realsense_attached; then
+    echo "手势预览启动：RealSense 未就绪。" >&2
+    return 1
+  fi
+  echo "启动手势预览：只读 RealSense，不会连接或移动机械臂。"
+  cd "${XIAOZHI_DIR}"
+  exec "${XIAOZHI_PYTHON}" -m src.mcp.tools.fairino_massage.gesture_control "$@"
+}
+
 main() {
   local cmd="${1:-help}"
   if [[ "$#" -gt 0 ]]; then
@@ -1297,6 +1323,9 @@ main() {
       ;;
     gui)
       run_xiaozhi_gui "$@"
+      ;;
+    gesture-check)
+      run_gesture_check "$@"
       ;;
     force-monitor)
       run_force_monitor "$@"

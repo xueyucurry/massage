@@ -506,6 +506,25 @@ def run_execute(args):
                 message="按摩已停止",
                 last_result=result,
             )
+        elif report_status == "partial":
+            _update_state(
+                args.state_path,
+                args.session_id,
+                execution_id=args.execution_id,
+                status="stopped",
+                stage="completed",
+                current_action="completed",
+                current_point_index=0,
+                current_repeat_index=0,
+                current_step_index=0,
+                resume_stage=None,
+                resume_point_index=0,
+                resume_action=None,
+                resume_repeat_index=0,
+                resume_step_index=0,
+                message="按摩部分完成，部分点位已跳过",
+                last_result=result,
+            )
         elif execute_result.get("ok"):
             _update_state(
                 args.state_path,

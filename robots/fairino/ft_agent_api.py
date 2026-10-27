@@ -1238,6 +1238,7 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                         ft.FORCE_SHUN_SEGMENT_LENGTH_MM,
                     )
                     motion_failed = False
+                    recontact_failed = False
                     for substep_index, motion_frame in enumerate(motion_frames):
                         substep_no = substep_index + 1
                         substep_count = len(motion_frames)
@@ -1334,18 +1335,53 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                                     f"    警告：顺筋点{point_no} 子段{substep_no}/{substep_count}"
                                     "卸力后未重新达到目标力"
                                 )
-                                safety_abort = True
+                                # The contact was lost, but the robot is still in a
+                                # recoverable state.  Retract to hover and let the
+                                # next point search for contact from scratch.
+                                recontact_failed = True
                                 motion_failed = True
                                 break
 
                     if motion_failed:
                         skipped_points.append(point_no)
                         ok = False
+                        if recontact_failed:
+                            recovered = (
+                                last_hover_pose is not None
+                                and self._move_force_pose_checked(
+                                    last_hover_pose,
+                                    f"顺筋点{point_no}重新贴合失败回悬空位",
+                                    ft.MOVE_VEL_SLOW,
+                                )
+                            )
+                            if not recovered:
+                                print(
+                                    f"    警告：顺筋点{point_no}重新贴合失败后回悬空位失败，"
+                                    "停止后续顺筋"
+                                )
+                                safety_abort = True
+                                break
+                            previous_contact_frame = None
+                            offset = -float(self.hover_height_mm)
+                            if not ft.FT_CONTINUE_ON_POINT_ERROR:
+                                break
+                            print(
+                                f"    警告：顺筋点{point_no}重新贴合失败，"
+                                "已回悬空位，跳到下一个点重新寻找接触"
+                            )
+                            continue
                         if safety_abort or not ft.FT_CONTINUE_ON_POINT_ERROR:
                             break
                         print(f"    警告：顺筋点{point_no}移动失败，跳过该点继续")
                         continue
-                    if getattr(ft, "FORCE_SHUN_RECONTACT", True):
+                    # After a segment recontact failure we deliberately reset the
+                    # path anchor and offset.  The next point must approach from
+                    # hover even when the optional per-point recontact is disabled.
+                    needs_start_recontact = (
+                        previous_contact_frame is None
+                        and offset <= -float(self.hover_height_mm) + 1e-6
+                    )
+                    if needs_start_recontact or getattr(ft, "FORCE_SHUN_RECONTACT", True):
                         self._set_agent_control_context("shun_jin", "shun_recontact", i)
                         self._control_checkpoint(
                             control,
@@ -1366,7 +1402,23 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                             ok = False
                             if not ft.FT_CONTINUE_ON_POINT_ERROR:
                                 break
-                            print(f"    警告：顺筋点{point_no}未重新达到目标力，跳过该点继续")
+                            recovered = (
+                                last_hover_pose is not None
+                                and self._move_force_pose_checked(
+                                    last_hover_pose,
+                                    f"顺筋点{point_no}重新贴合失败回悬空位",
+                                    ft.MOVE_VEL_SLOW,
+                                )
+                            )
+                            if not recovered:
+                                safety_abort = True
+                                break
+                            previous_contact_frame = None
+                            offset = -float(self.hover_height_mm)
+                            print(
+                                f"    警告：顺筋点{point_no}未重新达到目标力，"
+                                "已回悬空位，跳到下一个点重新寻找接触"
+                            )
                             continue
                     offset, hold_ok = self._hold_target_force(
                         frame,
@@ -1417,8 +1469,6 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 if moved_count <= 0:
                     print("    警告：顺筋没有完成任何候选点")
                     ok = False
-                if ft.FT_CONTINUE_ON_POINT_ERROR and skipped_points and not safety_abort:
-                    ok = True
             except MassageExecutionInterrupted:
                 raise
             except Exception as exc:
@@ -1844,9 +1894,8 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
             if not self._move_to_work_pose(safe_pose, "返回安全位置", ft.TRANSIT_MOVE_VEL_FAST):
                 return False
 
-            success = (not point_failures or ft.FT_CONTINUE_ON_POINT_ERROR) and (
-                shun_ok or ft.FT_CONTINUE_ON_POINT_ERROR
-            )
+            partial = bool(point_failures) or (run_shun and not shun_ok)
+            success = not partial
             self.last_action_report = {
                 "actions": actions,
                 "point_count": len(frames),
@@ -1856,9 +1905,12 @@ class AgentFTMassageDemo(ft.LastTimeRos2Demo):
                 ],
                 "shun_ok": bool(shun_ok) if run_shun else None,
                 "success": bool(success),
-                "status": "completed" if success else "failed",
+                "status": "partial" if partial else "completed",
             }
-            print("\n按摩动作接口执行完成" if success else "\n按摩动作接口执行完成（存在失败）")
+            if partial:
+                print("\n按摩动作接口执行完成（部分完成，存在跳过/失败点）")
+            else:
+                print("\n按摩动作接口执行完成")
             return bool(success)
         except MassageExecutionInterrupted as exc:
             self.last_action_report = {

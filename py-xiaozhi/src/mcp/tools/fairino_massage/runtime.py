@@ -566,6 +566,11 @@ def _empty_state() -> Dict[str, Any]:
         "worker_log_path": None,
         "worker_result_path": None,
         "worker_pid": None,
+        "gesture_status": "idle",
+        "gesture_message": None,
+        "gesture_updated_at": None,
+        "gesture_last_observation": None,
+        "gesture_last_command": None,
         "updated_at": _now_text(),
     }
 
@@ -578,6 +583,8 @@ class FairinoMassageRuntime:
         self._worker_thread: Optional[threading.Thread] = None
         self._worker_process: Optional[subprocess.Popen] = None
         self._detect_display_process: Optional[subprocess.Popen] = None
+        self._gesture_monitor = None
+        self._gesture_thread: Optional[threading.Thread] = None
         self._stop_lock = asyncio.Lock()
         self._state = self._load_state()
 
@@ -634,6 +641,142 @@ class FairinoMassageRuntime:
         with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         tmp_path.replace(self.control_path)
+
+    def _gesture_state(self, session_id: str) -> Dict[str, Any]:
+        with self._lock:
+            self._refresh_state_from_disk_unlocked()
+            if self._state.get("session_id") != session_id:
+                return {"status": "stopped", "worker_alive": False}
+            return self._state_copy_unlocked()
+
+    def _set_gesture_status(self, session_id: str, status: str, message: str):
+        with self._lock:
+            self._refresh_state_from_disk_unlocked()
+            if self._state.get("session_id") != session_id:
+                return
+            self._state.update(
+                gesture_status=str(status),
+                gesture_message=str(message),
+                gesture_updated_at=_now_text(),
+            )
+            self._save_state_unlocked()
+
+    def _record_gesture_observation(
+        self,
+        session_id: str,
+        gesture: Optional[str],
+        score: float,
+        accepted: bool,
+    ):
+        """Keep the most recent recognizer result for field diagnosis."""
+        with self._lock:
+            self._refresh_state_from_disk_unlocked()
+            if self._state.get("session_id") != session_id:
+                return
+            self._state["gesture_last_observation"] = {
+                "gesture": gesture or "None",
+                "score": round(float(score), 3),
+                "accepted": bool(accepted),
+                "min_score": float(os.environ.get("FAIRINO_GESTURE_MIN_SCORE", "0.60")),
+                "observed_at": _now_text(),
+            }
+            self._save_state_unlocked()
+
+    def _handle_gesture_command(self, command: str, session_id: str) -> bool:
+        """Dispatch through the same paths used by voice and GUI controls."""
+        command = str(command or "").strip().lower()
+        if command == "pause":
+            with self._lock:
+                self._refresh_state_from_disk_unlocked()
+                if (
+                    self._state.get("session_id") != session_id
+                    or self._state.get("status") != "running"
+                    or not self._is_worker_alive_unlocked()
+                ):
+                    return False
+                self._state.update(status="pausing", message="已识别握拳手势，等待安全检查点暂停")
+                self._write_control_unlocked("pause", source="gesture:Closed_Fist")
+                self._state["gesture_last_command"] = {
+                    "command": "pause",
+                    "source": "gesture:Closed_Fist",
+                    "at": _now_text(),
+                }
+                self._save_state_unlocked()
+                return True
+
+        if command == "resume":
+            with self._lock:
+                self._refresh_state_from_disk_unlocked()
+                if (
+                    self._state.get("session_id") != session_id
+                    or self._state.get("status") != "paused"
+                    or self._is_worker_alive_unlocked()
+                ):
+                    return False
+            result = self._start_worker(actions="", target="auto", trajectory_path="", resume=True)
+            if result.get("success"):
+                self._update_state(
+                    gesture_last_command={
+                        "command": "resume",
+                        "source": "gesture:Thumb_Up",
+                        "at": _now_text(),
+                    }
+                )
+            return bool(result.get("success"))
+
+        if command == "stop":
+            with self._lock:
+                self._refresh_state_from_disk_unlocked()
+                if (
+                    self._state.get("session_id") != session_id
+                    or self._state.get("status") not in {"running", "pausing", "paused"}
+                ):
+                    return False
+            # This worker owns a separate thread.  Reuse stop() so it waits for
+            # the local hover retreat and then applies the configured home move.
+            try:
+                return bool(
+                    asyncio.run(
+                        self.stop(
+                            control_source="gesture:Open_Palm",
+                            gesture_command="stop",
+                        )
+                    ).get("success")
+                )
+            except Exception as exc:
+                logger.error("[FairinoMassage] gesture stop failed: %s", exc, exc_info=True)
+                self._set_gesture_status(session_id, "error", f"手势停止失败：{exc}")
+                return False
+        return False
+
+    def _ensure_gesture_control_unlocked(self, session_id: str):
+        if not _env_enabled("FAIRINO_GESTURE_ENABLE", True):
+            self._state.update(gesture_status="disabled", gesture_message="手势控制已通过 FAIRINO_GESTURE_ENABLE 关闭")
+            self._save_state_unlocked()
+            return
+        if self._gesture_thread is not None and self._gesture_thread.is_alive():
+            return
+        try:
+            from .gesture_control import GestureControlMonitor
+
+            self._gesture_monitor = GestureControlMonitor(
+                state_provider=lambda: self._gesture_state(session_id),
+                command_callback=lambda command: self._handle_gesture_command(command, session_id),
+                status_callback=lambda status, message: self._set_gesture_status(session_id, status, message),
+                observation_callback=lambda gesture, score, accepted: self._record_gesture_observation(
+                    session_id, gesture, score, accepted
+                ),
+            )
+            self._gesture_thread = threading.Thread(
+                target=self._gesture_monitor.run,
+                daemon=True,
+                name="fairino-gesture-control",
+            )
+            self._gesture_thread.start()
+        except Exception as exc:
+            logger.warning("[FairinoMassage] failed to start gesture control: %s", exc)
+            self._state.update(gesture_status="error", gesture_message=f"手势控制启动失败：{exc}")
+            self._save_state_unlocked()
 
     def _result_path(self, session_id: str, operation: str) -> Path:
         RESULT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1528,6 +1671,7 @@ class FairinoMassageRuntime:
                 name="fairino-massage-worker",
             )
             self._worker_thread.start()
+            self._ensure_gesture_control_unlocked(session_id)
             return {
                 "success": True,
                 "message": result_message,
@@ -1785,11 +1929,24 @@ class FairinoMassageRuntime:
                 "state": self._state_copy_unlocked(),
             }
 
-    async def stop(self) -> Dict[str, Any]:
+    async def stop(
+        self,
+        *,
+        control_source: Optional[str] = None,
+        gesture_command: Optional[str] = None,
+    ) -> Dict[str, Any]:
         async with self._stop_lock:
-            return await self._stop_once()
+            return await self._stop_once(
+                control_source=control_source,
+                gesture_command=gesture_command,
+            )
 
-    async def _stop_once(self) -> Dict[str, Any]:
+    async def _stop_once(
+        self,
+        *,
+        control_source: Optional[str] = None,
+        gesture_command: Optional[str] = None,
+    ) -> Dict[str, Any]:
         with self._lock:
             self._refresh_state_from_disk_unlocked()
             worker_alive = self._is_worker_alive_unlocked()
@@ -1807,7 +1964,14 @@ class FairinoMassageRuntime:
                 status="stopping" if worker_alive else "stopped",
                 message="已请求停止，先回当前点悬空位，再回起始位置" if worker_alive else "按摩已停止，准备回到起始位置",
             )
-            self._write_control_unlocked("stop")
+            control_extra = {"source": control_source} if control_source else {}
+            self._write_control_unlocked("stop", **control_extra)
+            if gesture_command:
+                self._state["gesture_last_command"] = {
+                    "command": gesture_command,
+                    "source": control_source or "gesture",
+                    "at": _now_text(),
+                }
             self._save_state_unlocked()
 
         stopped_cleanly = True
