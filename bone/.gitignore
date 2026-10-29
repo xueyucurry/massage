@@ -1,0 +1,20 @@
+# Local environments rebuilt on target machine
+.venv/
+.venv-noetic/
+env/.venv/
+py-xiaozhi/.venv/
+py-xiaozhi/.venv-linux/
+
+# Runtime caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ROS2 build outputs
+robots/fairino/fairino_ros2/frcobot_ros2-master/build/
+robots/fairino/fairino_ros2/frcobot_ros2-master/log/
+
+# Process/runtime scratch
+*.pid
+*.log
+robots/fairino/.ros2_runtime_libs/

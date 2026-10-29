@@ -1,0 +1,6 @@
+# 手环只允许发布；本机接收器只允许订阅。
+user band01
+topic write b/vitals
+
+user xiaozhi
+topic read b/vitals

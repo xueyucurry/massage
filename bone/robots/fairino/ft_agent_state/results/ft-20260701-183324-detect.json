@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "operation": "detect_meridian",
+  "target": "back",
+  "target_label": "背部膀胱经",
+  "error": "检测未成功或超时"
+}

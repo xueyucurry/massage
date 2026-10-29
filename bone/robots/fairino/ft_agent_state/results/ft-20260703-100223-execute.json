@@ -1,0 +1,84 @@
+{
+  "ok": false,
+  "operation": "execute_loaded_trajectory",
+  "load": {
+    "ok": true,
+    "operation": "load_trajectory",
+    "target": "leg",
+    "target_label": "腿部大腿外侧中线",
+    "trajectory": {
+      "target": "leg",
+      "target_label": "腿部大腿外侧中线",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/thigh_outerline_trajectory_20260703_100228.json",
+      "point_count": 7,
+      "hover_height_mm": 20.0,
+      "force_target_n": 50.0,
+      "tool_tip_length_mm": 95.0
+    }
+  },
+  "execute": {
+    "ok": false,
+    "operation": "execute_actions",
+    "target": "leg",
+    "target_label": "腿部大腿外侧中线",
+    "actions": [
+      "dian_jin",
+      "fen_jin",
+      "shun_jin"
+    ],
+    "report": {
+      "actions": [
+        "dian_jin",
+        "fen_jin",
+        "shun_jin"
+      ],
+      "point_count": 7,
+      "point_failures": [],
+      "shun_ok": true,
+      "success": false,
+      "status": "stopped",
+      "checkpoint": {
+        "stage": "point_actions",
+        "current_action": "dian_jin",
+        "current_point_index": 2,
+        "next_stage": "point_actions",
+        "next_point_index": 2,
+        "message": "点筋结束回悬空位 2/3: 已回到悬空位，可暂停",
+        "safe_to_pause": true,
+        "robot_state": {
+          "tcp_pose": [
+            61.83933639526367,
+            573.5663452148438,
+            -19.55111312866211,
+            -127.11459350585938,
+            68.71125030517578,
+            -33.759742736816406
+          ],
+          "joints_deg": [
+            94.57096862792969,
+            -160.32968139648438,
+            -102.864013671875,
+            70.520263671875,
+            86.93187713623047,
+            73.42826843261719
+          ]
+        },
+        "force_target_n": 50.0,
+        "current_repeat_index": 1,
+        "current_step_index": 0,
+        "next_repeat_index": 1,
+        "next_step_index": 0,
+        "next_action": "dian_jin"
+      }
+    },
+    "trajectory": {
+      "target": "leg",
+      "target_label": "腿部大腿外侧中线",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/thigh_outerline_trajectory_20260703_100228.json",
+      "point_count": 7,
+      "hover_height_mm": 20.0,
+      "force_target_n": 50.0,
+      "tool_tip_length_mm": 95.0
+    }
+  }
+}

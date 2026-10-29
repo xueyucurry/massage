@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "operation": "detect_meridian",
+  "target": "back",
+  "target_label": "背部膀胱经",
+  "trajectory": {
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260701_171655.json",
+    "point_count": 10,
+    "hover_height_mm": 20.0,
+    "force_target_n": 30.0,
+    "tool_tip_length_mm": 95.0
+  }
+}

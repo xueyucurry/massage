@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "operation": "detect_meridian",
+  "target": "leg",
+  "target_label": "腿部大腿外侧中线",
+  "error": "检测未成功或超时"
+}

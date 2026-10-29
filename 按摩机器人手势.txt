@@ -1,0 +1,9 @@
+握拳	Closed_Fist	暂停按摩	保存当前任务进度，进入暂停状态
+竖拇指	Thumb_Up	继续按摩	仅在暂停状态、控制器允许恢复时生效
+张开手掌	Open_Palm	停止本次按摩	结束当前任务；再次竖拇指不能直接重启
+自然放手、其他手型或未检出手	无有效指令	不产生新的状态切换	不把“手消失”解释成继续
+
+MediaPipe Gesture Recognizer
+https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer?utm_source=chatgpt.com
+https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer/python?utm_source=chatgpt.com
+https://google-ai-edge.github.io/mediapipe-samples-web/?utm_source=chatgpt.com

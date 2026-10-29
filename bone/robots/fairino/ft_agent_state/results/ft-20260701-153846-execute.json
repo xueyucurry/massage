@@ -1,0 +1,51 @@
+{
+  "ok": false,
+  "operation": "execute_loaded_trajectory",
+  "load": {
+    "ok": true,
+    "operation": "load_trajectory",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260701_153859.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  },
+  "execute": {
+    "ok": false,
+    "operation": "execute_actions",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "actions": [
+      "dian_jin",
+      "fen_jin",
+      "shun_jin"
+    ],
+    "report": {
+      "actions": [
+        "dian_jin",
+        "fen_jin",
+        "shun_jin"
+      ],
+      "point_count": 10,
+      "point_failures": [],
+      "shun_ok": null,
+      "success": false,
+      "status": "running"
+    },
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260701_153859.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  }
+}

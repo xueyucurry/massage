@@ -1,0 +1,6 @@
+.venv/
+.runtime/
+data/*.sqlite3
+data/*.sqlite3-*
+health.json
+__pycache__/

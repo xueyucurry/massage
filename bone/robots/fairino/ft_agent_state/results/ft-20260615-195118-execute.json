@@ -1,0 +1,57 @@
+{
+  "ok": false,
+  "operation": "execute_loaded_trajectory",
+  "load": {
+    "ok": true,
+    "operation": "load_trajectory",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260615_195130.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  },
+  "execute": {
+    "ok": false,
+    "operation": "execute_actions",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "actions": [
+      "dian_jin",
+      "fen_jin",
+      "shun_jin"
+    ],
+    "report": {
+      "actions": [
+        "dian_jin",
+        "fen_jin",
+        "shun_jin"
+      ],
+      "point_count": 10,
+      "point_failures": [
+        {
+          "point": 2,
+          "stage": "分筋"
+        }
+      ],
+      "shun_ok": true,
+      "success": false,
+      "status": "error",
+      "error": "ROS2 指令超时: CARTPoint(1,-90.91597,650.399481,97.03024,-144.400121,73.534532,-33.748)"
+    },
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260615_195130.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  }
+}

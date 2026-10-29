@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "operation": "detect_meridian",
+  "target": "leg",
+  "target_label": "腿部大腿外侧中线",
+  "trajectory": {
+    "target": "leg",
+    "target_label": "腿部大腿外侧中线",
+    "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/thigh_outerline_trajectory_20260703_112506.json",
+    "point_count": 7,
+    "hover_height_mm": 20.0,
+    "force_target_n": 30.0,
+    "tool_tip_length_mm": 95.0
+  }
+}

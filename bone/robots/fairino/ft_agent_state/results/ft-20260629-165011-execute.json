@@ -1,0 +1,84 @@
+{
+  "ok": false,
+  "operation": "execute_loaded_trajectory",
+  "load": {
+    "ok": true,
+    "operation": "load_trajectory",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260629_165024.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  },
+  "execute": {
+    "ok": false,
+    "operation": "execute_actions",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "actions": [
+      "dian_jin",
+      "fen_jin",
+      "shun_jin"
+    ],
+    "report": {
+      "actions": [
+        "dian_jin",
+        "fen_jin",
+        "shun_jin"
+      ],
+      "point_count": 10,
+      "point_failures": [],
+      "shun_ok": true,
+      "success": false,
+      "status": "stopped",
+      "checkpoint": {
+        "stage": "point_actions",
+        "current_action": "dian_jin",
+        "current_point_index": 0,
+        "next_stage": "point_actions",
+        "next_point_index": 0,
+        "message": "点筋结束回悬空位 3/3: 已回到悬空位，可暂停",
+        "safe_to_pause": true,
+        "robot_state": {
+          "tcp_pose": [
+            -72.28296661376953,
+            738.3248291015625,
+            78.2978515625,
+            -149.25010681152344,
+            60.7484016418457,
+            -33.73162078857422
+          ],
+          "joints_deg": [
+            102.30708312988281,
+            -152.16781616210938,
+            -82.55540466308594,
+            29.57802391052246,
+            98.77013397216797,
+            69.927001953125
+          ]
+        },
+        "force_target_n": 30.0,
+        "current_repeat_index": 2,
+        "current_step_index": 0,
+        "next_repeat_index": 2,
+        "next_step_index": 0,
+        "next_action": "dian_jin"
+      }
+    },
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260629_165024.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# FAIRINO massage / vision Python dependencies.
+# ROS2 packages such as rclpy, fairino_msgs and moveit_msgs come from ROS2 Humble.
+numpy
+opencv-python
+pyrealsense2
+torch
+torchvision
+ultralytics
+mmpose
+mmcv-lite
+mmengine
+mmdet
+pyserial
+scipy
+matplotlib
+pillow
+einops
+timm

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+PYTHON=".venv/bin/python"
+STATE_DIR=".runtime"
+PID_FILE="$STATE_DIR/receiver.pid"
+LOG_FILE="$STATE_DIR/receiver.log"
+
+setup() {
+    python3 -m venv .venv
+    "$PYTHON" -m pip install --upgrade pip
+    "$PYTHON" -m pip install -r requirements.txt
+}
+
+start() {
+    [[ -x "$PYTHON" ]] || { echo "请先执行：./health setup"; exit 1; }
+    mkdir -p "$STATE_DIR"
+    umask 077
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(<"$PID_FILE")" 2>/dev/null; then
+        echo "接收器已在后台运行（PID $(<"$PID_FILE")）"
+        return
+    fi
+    rm -f "$PID_FILE"
+    nohup "$PYTHON" receiver.py --config health.json >>"$LOG_FILE" 2>&1 < /dev/null &
+    echo $! > "$PID_FILE"
+    echo "接收器已在后台启动（PID $(<"$PID_FILE")）"
+}
+
+stop() {
+    [[ -f "$PID_FILE" ]] || { echo "未找到后台接收器"; return; }
+    local pid
+    pid="$(<"$PID_FILE")"
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid"
+        echo "已停止接收器（PID $pid）"
+    fi
+    rm -f "$PID_FILE"
+}
+
+case "${1:-}" in
+    setup) setup ;;
+    start) start ;;
+    stop) stop ;;
+    logs) tail -n 30 "$LOG_FILE" ;;
+    *) [[ -x "$PYTHON" ]] || { echo "请先执行：./health setup"; exit 1; }; exec "$PYTHON" query.py "$@" ;;
+esac

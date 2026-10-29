@@ -1,0 +1,15 @@
+{
+  "mqtt": {
+    "host": "YOUR_PUBLIC_MQTT_BROKER_IP",
+    "port": 1883,
+    "topic": "b/vitals",
+    "username": "xiaozhi",
+    "password": "REPLACE_ME",
+    "tls": false
+  },
+  "database_path": "data/health_band.sqlite3",
+  "allowed_devices": [
+    "4754120002D6"
+  ],
+  "allow_unregistered": false
+}

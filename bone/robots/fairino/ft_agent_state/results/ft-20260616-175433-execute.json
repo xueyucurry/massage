@@ -1,0 +1,82 @@
+{
+  "ok": false,
+  "operation": "execute_loaded_trajectory",
+  "load": {
+    "ok": true,
+    "operation": "load_trajectory",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260616_175447.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  },
+  "execute": {
+    "ok": false,
+    "operation": "execute_actions",
+    "target": "back",
+    "target_label": "背部膀胱经",
+    "actions": [
+      "dian_jin",
+      "fen_jin",
+      "shun_jin"
+    ],
+    "report": {
+      "actions": [
+        "dian_jin",
+        "fen_jin",
+        "shun_jin"
+      ],
+      "point_count": 10,
+      "point_failures": [],
+      "shun_ok": true,
+      "success": false,
+      "status": "stopped",
+      "checkpoint": {
+        "stage": "point_actions",
+        "current_action": "dian_jin",
+        "current_point_index": 1,
+        "next_stage": "point_actions",
+        "next_point_index": 1,
+        "message": "点筋结束回悬空位 2/3: 准备运动",
+        "safe_to_pause": false,
+        "robot_state": {
+          "tcp_pose": [
+            -59.6275749206543,
+            695.95556640625,
+            54.693687438964844,
+            -149.81568908691406,
+            87.95950317382812,
+            -33.8460693359375
+          ],
+          "joints_deg": [
+            101.18647766113281,
+            -159.7675323486328,
+            -80.54566955566406,
+            58.489253997802734,
+            104.76018524169922,
+            88.50890350341797
+          ]
+        },
+        "current_repeat_index": 1,
+        "current_step_index": 0,
+        "next_repeat_index": 1,
+        "next_step_index": 0
+      }
+    },
+    "trajectory": {
+      "target": "back",
+      "target_label": "背部膀胱经",
+      "trajectory_path": "/home/franka/massage/robots/fairino/ft_locked_trajectory_output/back_trajectory_20260616_175447.json",
+      "point_count": 10,
+      "hover_height_mm": 20.0,
+      "force_target_n": 30.0,
+      "tool_tip_length_mm": 95.0
+    }
+  }
+}
