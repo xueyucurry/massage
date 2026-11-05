@@ -156,3 +156,13 @@ class HealthStore:
         samples = [self._sample(row) for row in rows]
         allowed = {normalise_mac(item) for item in device_macs or []}
         return [sample for sample in samples if not allowed or sample["device_mac"] in allowed]
+
+    def prune_older_than_days(self, days: int) -> int:
+        """Delete old local samples only when the operator explicitly requests it."""
+        days = max(1, min(int(days), 3650))
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM health_band_samples WHERE julianday(received_at) < julianday('now', ?)",
+                [f"-{days} days"],
+            )
+            return cursor.rowcount

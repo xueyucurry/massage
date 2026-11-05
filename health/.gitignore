@@ -3,4 +3,5 @@
 data/*.sqlite3
 data/*.sqlite3-*
 health.json
+health_alert_policy.json
 __pycache__/

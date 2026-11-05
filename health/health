@@ -39,10 +39,21 @@ stop() {
     rm -f "$PID_FILE"
 }
 
+receiver_status() {
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(<"$PID_FILE")" 2>/dev/null; then
+        echo "接收器运行中（PID $(<"$PID_FILE")）"
+        return 0
+    fi
+    echo "接收器未运行"
+    return 1
+}
+
 case "${1:-}" in
     setup) setup ;;
     start) start ;;
     stop) stop ;;
+    receiver-status) receiver_status ;;
     logs) tail -n 30 "$LOG_FILE" ;;
+    prune) shift; exec "$PYTHON" maintenance.py prune "$@" ;;
     *) [[ -x "$PYTHON" ]] || { echo "请先执行：./health setup"; exit 1; }; exec "$PYTHON" query.py "$@" ;;
 esac

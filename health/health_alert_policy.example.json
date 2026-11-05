@@ -1,0 +1,19 @@
+{
+  "stale_after_seconds": 90,
+  "expected_upload_interval_seconds": 30,
+  "upload_interval_factor": 2.0,
+  "low_battery_percent": 20,
+  "consecutive_samples": 3,
+  "trend_minutes": 10,
+  "consecutive_invalid_samples": 3,
+  "invalid_measurements": {
+    "heart_rate_bpm": { "min_exclusive": 0 },
+    "spo2_percent": { "min_exclusive": 0, "max": 100 },
+    "temperature_c": { "min_exclusive": 0 }
+  },
+  "thresholds": {
+    "heart_rate_bpm": { "low": null, "high": null },
+    "spo2_percent": { "low": null, "high": null },
+    "temperature_c": { "low": null, "high": null }
+  }
+}

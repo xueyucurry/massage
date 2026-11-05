@@ -279,6 +279,16 @@ class McpServer:
         except Exception as e:
             logger.warning(f"[MCP] 注册 FAIRINO Massage 工具失败: {e}")
 
+        # 手环工具仅以只读方式查询 health/ 下的 SQLite 数据库。放在按摩专用
+        # 模式判断之前，确保按摩界面也能查询用户当前体征和数据新鲜度。
+        try:
+            from src.mcp.tools.health_band import get_health_band_manager
+
+            health_band_manager = get_health_band_manager()
+            health_band_manager.init_tools(self.add_tool, PropertyList, Property, PropertyType)
+        except Exception as e:
+            logger.warning(f"[MCP] 注册手环工具失败: {e}")
+
         massage_only_enabled = os.environ.get(
             "XIAOZHI_MASSAGE_ONLY", "0"
         ).strip().lower() in {"1", "true", "yes", "on"}
