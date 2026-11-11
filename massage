@@ -55,6 +55,7 @@ Usage:
   ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
   ./massage gui        Start py-xiaozhi GUI
   ./massage gesture-check Open a camera-only hand-gesture preview (no robot motion)
+  ./massage shoulder-check Show side-lying shoulder symmetry (camera only)
   ./massage force-monitor Open the read-only force sensor monitor
   ./massage calibrate  Start RealSense + ArUco camera-to-robot calibration
   ./massage adjust-lines Open the live four-line offset editor
@@ -1161,6 +1162,22 @@ run_xiaozhi_gui() {
   exec "${XIAOZHI_PYTHON}" main.py --mode gui "$@"
 }
 
+run_shoulder_check() {
+  local runner="${FAIRINO_DIR}/run_shoulder_symmetry.sh"
+  if [[ ! -x "${runner}" ]]; then
+    echo "找不到肩部对称性检测程序: ${runner}" >&2
+    return 1
+  fi
+  if [[ "${1:-}" != "-h" && "${1:-}" != "--help" ]]; then
+    if ! ensure_realsense_attached; then
+      echo "肩部对称性检测启动：RealSense 未就绪。" >&2
+      return 1
+    fi
+  fi
+  echo "启动侧卧双肩对称性检测：只读 RealSense，不会连接或移动机械臂。"
+  exec "${runner}" "$@"
+}
+
 run_calibration() {
   if [[ ! -f "${CALIBRATION_SCRIPT}" ]]; then
     echo "找不到标定程序: ${CALIBRATION_SCRIPT}" >&2
@@ -1326,6 +1343,9 @@ main() {
       ;;
     gesture-check)
       run_gesture_check "$@"
+      ;;
+    shoulder-check)
+      run_shoulder_check "$@"
       ;;
     force-monitor)
       run_force_monitor "$@"
