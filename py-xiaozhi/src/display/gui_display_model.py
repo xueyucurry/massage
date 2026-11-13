@@ -3,9 +3,6 @@
 GUI 显示窗口数据模型 - 用于 QML 数据绑定.
 """
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from PyQt5.QtCore import QObject, pyqtProperty, pyqtSignal
 
 
@@ -22,6 +19,9 @@ class GuiDisplayModel(QObject):
     modeTextChanged = pyqtSignal()
     autoModeChanged = pyqtSignal()
     massageStateChanged = pyqtSignal()
+    shoulderCheckChanged = pyqtSignal()
+    # Compatibility signal for legacy, hidden QML layouts.  The live health
+    # panel owns its data and logic in health/gui.
     healthStateChanged = pyqtSignal()
 
     # 用户操作信号
@@ -44,6 +44,8 @@ class GuiDisplayModel(QObject):
         self._mode_text = "手动对话"  # 模式切换按钮文本
         self._auto_mode = False  # 是否自动模式
         self._is_connected = False
+        self._shoulder_check_running = False
+        self._shoulder_check_message = ""
         self._massage_state = {
             "robot_status_text": "未连接",
             "robot_status_color": "#8A94A6",
@@ -60,20 +62,18 @@ class GuiDisplayModel(QObject):
             "updated_at": "-",
             "message": "就绪，等待语音指令",
         }
-        self._health_state = {
-            "status_label": "等待接收",
-            "status_color": "#8A94A6",
-            "heart_rate_text": "-",
-            "spo2_text": "-",
-            "temperature_text": "-",
-            "battery_text": "-",
-            "received_at_text": "-",
-            "message": "正在接收数据，等待首条非零、非空的有效手环上报",
-            "receiver_status_text": "接收器状态未知",
-            "receiver_running": False,
-            "heart_rate_trend": [],
-            "spo2_trend": [],
-            "temperature_trend": [],
+        # Kept only so dormant pre-existing QML components can load without
+        # binding warnings.  These values are never updated or displayed; the
+        # standalone health module is the sole source of health UI state.
+        self._legacy_health_state = {
+            "status_label": "等待接收", "status_color": "#8A94A6",
+            "heart_rate_text": "--", "spo2_text": "--",
+            "temperature_text": "--", "battery_text": "--",
+            "received_at_text": "--", "message": "",
+            "receiver_status_text": "", "receiver_running": False,
+            "heart_rate_trend": [], "spo2_trend": [], "temperature_trend": [],
+            "height_text": "--", "weight_text": "--", "bmi_text": "--",
+            "body_metrics_source_text": "",
         }
 
     # 状态文本属性
@@ -289,7 +289,13 @@ class GuiDisplayModel(QObject):
         force_text = "-"
         try:
             if force not in (None, ""):
-                force_text = f"{float(force):.1f} N"
+                force_value = float(force)
+                force_number = (
+                    f"{force_value:.1f}"
+                    if force_value.is_integer() or abs(force_value * 10 - round(force_value * 10)) < 1e-9
+                    else f"{force_value:.2f}".rstrip("0").rstrip(".")
+                )
+                force_text = f"{force_number} N"
         except (TypeError, ValueError):
             force_text = str(force)
 
@@ -373,106 +379,54 @@ class GuiDisplayModel(QObject):
     def massageMessage(self):
         return self._massage_value("message")
 
-    def update_health_state(self, state: dict):
-        """更新手环数据展示；状态只用于提示，不触发按摩控制。"""
-        state = state or {}
+    def update_shoulder_check(self, running: bool, message: str):
+        if (self._shoulder_check_running, self._shoulder_check_message) != (running, message):
+            self._shoulder_check_running = running
+            self._shoulder_check_message = message
+            self.shoulderCheckChanged.emit()
 
-        def received_at_text(value):
-            if not value:
-                return ""
-            try:
-                return datetime.fromisoformat(str(value)).astimezone(
-                    ZoneInfo("Asia/Shanghai")
-                ).strftime("%m-%d %H:%M:%S")
-            except ValueError:
-                return str(value)
+    @pyqtProperty(bool, notify=shoulderCheckChanged)
+    def shoulderCheckRunning(self):
+        return self._shoulder_check_running
 
-        def value(key, suffix=""):
-            raw = state.get(key)
-            return "-" if raw is None else f"{raw}{suffix}"
+    @pyqtProperty(str, notify=shoulderCheckChanged)
+    def shoulderCheckMessage(self):
+        return self._shoulder_check_message
 
-        updates = {
-            "status_label": str(state.get("status_label") or "等待接收"),
-            "status_color": str(state.get("color") or "#8A94A6"),
-            "heart_rate_text": value("heart_rate_bpm", " bpm"),
-            "spo2_text": value("spo2_percent", " %"),
-            "temperature_text": value("temperature_c", " ℃"),
-            "battery_text": value("battery_percent", " %"),
-            "received_at_text": str(state.get("received_at") or "-"),
-            "message": (
-                f"{str(state.get('message') or '正在接收数据，等待首条非零、非空的有效手环上报')}"
-                + (f" · 最后接收 {received_at_text(state.get('received_at'))}" if state.get("received_at") else "")
-            ),
-            "heart_rate_trend": list((state.get("trends") or {}).get("heart_rate_bpm") or []),
-            "spo2_trend": list((state.get("trends") or {}).get("spo2_percent") or []),
-            "temperature_trend": list((state.get("trends") or {}).get("temperature_c") or []),
-        }
-        if any(self._health_state.get(key) != value for key, value in updates.items()):
-            self._health_state.update(updates)
-            self.healthStateChanged.emit()
-
-    def _health_value(self, key: str):
-        return self._health_state.get(key, "")
-
-    def update_health_receiver_state(self, state: dict):
-        """更新接收器进程状态；不影响按摩控制。"""
-        state = state or {}
-        updates = {
-            "receiver_status_text": str(state.get("text") or "接收器状态未知"),
-            "receiver_running": bool(state.get("running")),
-        }
-        if any(self._health_state.get(key) != value for key, value in updates.items()):
-            self._health_state.update(updates)
-            self.healthStateChanged.emit()
+    def _legacy_health_value(self, key: str):
+        return self._legacy_health_state.get(key, "")
 
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthStatusLabel(self):
-        return self._health_value("status_label")
-
+    def healthStatusLabel(self): return self._legacy_health_value("status_label")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthStatusColor(self):
-        return self._health_value("status_color")
-
+    def healthStatusColor(self): return self._legacy_health_value("status_color")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthHeartRateText(self):
-        return self._health_value("heart_rate_text")
-
+    def healthHeartRateText(self): return self._legacy_health_value("heart_rate_text")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthSpo2Text(self):
-        return self._health_value("spo2_text")
-
+    def healthSpo2Text(self): return self._legacy_health_value("spo2_text")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthTemperatureText(self):
-        return self._health_value("temperature_text")
-
+    def healthTemperatureText(self): return self._legacy_health_value("temperature_text")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthBatteryText(self):
-        return self._health_value("battery_text")
-
+    def healthBatteryText(self): return self._legacy_health_value("battery_text")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthReceivedAtText(self):
-        return self._health_value("received_at_text")
-
+    def healthReceivedAtText(self): return self._legacy_health_value("received_at_text")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthMessage(self):
-        return self._health_value("message")
-
+    def healthMessage(self): return self._legacy_health_value("message")
     @pyqtProperty(str, notify=healthStateChanged)
-    def healthReceiverStatusText(self):
-        return self._health_value("receiver_status_text")
-
+    def healthReceiverStatusText(self): return self._legacy_health_value("receiver_status_text")
     @pyqtProperty(bool, notify=healthStateChanged)
-    def healthReceiverRunning(self):
-        return bool(self._health_value("receiver_running"))
-
+    def healthReceiverRunning(self): return bool(self._legacy_health_value("receiver_running"))
     @pyqtProperty("QVariantList", notify=healthStateChanged)
-    def healthHeartRateTrend(self):
-        return self._health_value("heart_rate_trend")
-
+    def healthHeartRateTrend(self): return self._legacy_health_value("heart_rate_trend")
     @pyqtProperty("QVariantList", notify=healthStateChanged)
-    def healthSpo2Trend(self):
-        return self._health_value("spo2_trend")
-
+    def healthSpo2Trend(self): return self._legacy_health_value("spo2_trend")
     @pyqtProperty("QVariantList", notify=healthStateChanged)
-    def healthTemperatureTrend(self):
-        return self._health_value("temperature_trend")
+    def healthTemperatureTrend(self): return self._legacy_health_value("temperature_trend")
+    @pyqtProperty(str, notify=healthStateChanged)
+    def healthHeightText(self): return self._legacy_health_value("height_text")
+    @pyqtProperty(str, notify=healthStateChanged)
+    def healthWeightText(self): return self._legacy_health_value("weight_text")
+    @pyqtProperty(str, notify=healthStateChanged)
+    def healthBmiText(self): return self._legacy_health_value("bmi_text")
+    @pyqtProperty(str, notify=healthStateChanged)
+    def healthBodyMetricsSourceText(self): return self._legacy_health_value("body_metrics_source_text")

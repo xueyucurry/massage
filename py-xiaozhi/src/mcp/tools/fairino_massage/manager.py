@@ -60,6 +60,7 @@ class FairinoMassageToolsManager:
                     "如果用户本轮同时明确同意沿用记忆中的力度偏好，必须先调用 self.fairino_massage.set_pending_force，确认其 success=true 后再调用本工具；不得跳过力度预设直接开始。"
                     "如果用户明确说“开始顺筋、只做顺筋、只执行顺筋、顺筋测试、检查顺筋效果”，必须优先调用 self.fairino_massage.shunjin，不要用 all。"
                     "不要只用自然语言回复进度；只有工具返回后才能告诉用户是否已启动。"
+                    "若工具返回成功且 message 包含 BMI 体型和力度，请在语音回复中明确读出该 message 的体型、基准力、倍率及最终目标力。"
                     "功能：使用当前已检测保存的轨迹，后台执行点筋/分筋/顺筋。"
                     "actions 可取 all 或 dian_jin,fen_jin,shun_jin 的逗号组合；无 trajectory_path 时使用当前会话轨迹。",
                     start_props,
@@ -79,6 +80,7 @@ class FairinoMassageToolsManager:
                     "【FAIRINO只执行顺筋】用户说“开始顺筋、只做顺筋、只执行顺筋、单独顺筋、顺筋测试、检查顺筋、检查顺筋效果、测试顺筋贴合”时必须调用本工具。"
                     "如果用户本轮同时明确同意沿用记忆中的顺筋力度，必须先调用 self.fairino_massage.set_pending_force（actions=shun_jin），确认 success=true 后再调用本工具。"
                     "功能：使用当前已检测保存的轨迹，只执行 shun_jin 顺筋动作，不执行点筋和分筋，方便检查顺筋末端是否贴合人体。"
+                    "若工具返回成功且 message 包含 BMI 体型和力度，请在语音回复中明确读出该 message 的体型、基准力、倍率及最终目标力。"
                     "无 trajectory_path 时使用当前会话轨迹；如果没有已保存轨迹，工具会返回失败并提示先检测。",
                     shun_props,
                     start_shun_jin,

@@ -46,8 +46,16 @@ class PendingForceRuntimeTests(unittest.TestCase):
             force_target_n=10.0,
         )
         self.runtime._save_state_unlocked()
+        self.recommendation_store = mock.Mock()
+        self.recommendation_store.consume.return_value = None
+        self.recommendation_store_patcher = mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.MassageRecommendationStore",
+            return_value=self.recommendation_store,
+        )
+        self.recommendation_store_patcher.start()
 
     def tearDown(self):
+        self.recommendation_store_patcher.stop()
         self.temp_dir.cleanup()
 
     def test_exact_fractional_force_updates_gui_state_immediately(self):
@@ -108,6 +116,92 @@ class PendingForceRuntimeTests(unittest.TestCase):
         self.assertEqual(result["force_target_n"], 10.0)
         self.assertFalse(result["state"]["session_force_override_active"])
         self.assertFalse(self.runtime._worker_thread.args[5])
+
+    def test_confirmed_bmi_recommendation_applies_once_when_no_manual_preset(self):
+        recommendation = {
+            "factor": 1.10,
+            "requested_force_n": 11.0,
+            "category": "肥胖",
+        }
+        store = mock.Mock()
+        store.consume.return_value = recommendation
+        with mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.MassageRecommendationStore",
+            return_value=store,
+        ), mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.threading.Thread",
+            _NoopThread,
+        ):
+            result = asyncio.run(self.runtime.start(actions="all", target="back"))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["force_target_n"], 11.0)
+        self.assertTrue(result["state"]["session_force_override_active"])
+        self.assertIn("BMI 建议", result["message"])
+        store.consume.assert_called_once_with(10.0)
+
+    def test_confirmed_bmi_multiplies_matching_manual_preset_baseline(self):
+        asyncio.run(
+            self.runtime.set_pending_force(
+                target_force_n=5.0,
+                target="back",
+                actions="all",
+            )
+        )
+        recommendation = {
+            "factor": 1.05,
+            "requested_force_n": 5.25,
+            "category": "超重",
+        }
+        store = mock.Mock()
+        store.consume.return_value = recommendation
+        with mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.MassageRecommendationStore",
+            return_value=store,
+        ), mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.threading.Thread",
+            _NoopThread,
+        ):
+            result = asyncio.run(self.runtime.start(actions="all", target="back"))
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["pending_force_applied"])
+        self.assertEqual(result["force_target_n"], 5.25)
+        self.assertIn("BMI 建议", result["message"])
+        self.assertIn("基准 5 牛", result["message"])
+        store.consume.assert_called_once_with(5.0)
+        self.assertTrue(self.runtime._worker_thread.args[5])
+
+    def test_bmi_recommendation_follows_current_existing_baseline(self):
+        # `force_target_n` may still contain an old, manually selected value.
+        # A new massage must instead use the baseline resolved by the existing
+        # runtime logic (`default_force_target_n` here), then apply BMI factor.
+        self.runtime._state.update(
+            default_force_target_n=14.0,
+            force_target_n=5.0,
+            pending_force_preset=None,
+        )
+        self.runtime._save_state_unlocked()
+        recommendation = {
+            "factor": 1.05,
+            "requested_force_n": 14.7,
+            "category": "超重",
+        }
+        store = mock.Mock()
+        store.consume.return_value = recommendation
+
+        with mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.MassageRecommendationStore",
+            return_value=store,
+        ), mock.patch(
+            "src.mcp.tools.fairino_massage.runtime.threading.Thread",
+            _NoopThread,
+        ):
+            result = asyncio.run(self.runtime.start(actions="all", target="back"))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["force_target_n"], 14.7)
+        store.consume.assert_called_once_with(14.0)
 
     def test_mismatched_preset_is_discarded_instead_of_applied_later(self):
         asyncio.run(

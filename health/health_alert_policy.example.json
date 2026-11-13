@@ -1,10 +1,10 @@
 {
-  "stale_after_seconds": 90,
-  "expected_upload_interval_seconds": 30,
+  "stale_after_seconds": 20,
+  "expected_upload_interval_seconds": 5,
   "upload_interval_factor": 2.0,
   "low_battery_percent": 20,
   "consecutive_samples": 3,
-  "trend_minutes": 10,
+  "trend_minutes": 1,
   "consecutive_invalid_samples": 3,
   "invalid_measurements": {
     "heart_rate_bpm": { "min_exclusive": 0 },

@@ -4,7 +4,7 @@ import QtQuick.Layouts 1.15
 
 Rectangle {
     id: root
-    width: 1460
+    width: 1280
     height: 620
     color: "#eef4f8"
 
@@ -15,8 +15,7 @@ Rectangle {
     signal modeButtonClicked()
     signal sendButtonClicked(string text)
     signal settingsButtonClicked()
-    signal healthReceiverStartClicked()
-    signal healthReceiverStopClicked()
+    signal shoulderCheckClicked()
     signal titleMinimize()
     signal titleClose()
     signal titleDragStart(real mouseX, real mouseY)
@@ -379,7 +378,7 @@ Rectangle {
             spacing: 10
 
             Rectangle {
-                Layout.preferredWidth: 250
+                Layout.preferredWidth: Math.max(190, Math.min(210, root.width * 0.165))
                 Layout.fillHeight: true
                 radius: 8
                 color: "#ffffff"
@@ -696,7 +695,7 @@ Rectangle {
             }
 
             Rectangle {
-                Layout.preferredWidth: 230
+                Layout.preferredWidth: Math.max(180, Math.min(195, root.width * 0.152))
                 Layout.fillHeight: true
                 radius: 8
                 color: "#ffffff"
@@ -889,11 +888,15 @@ Rectangle {
             }
 
             Rectangle {
-                Layout.preferredWidth: 260
+                // Health is supporting information; keep it compact so the
+                // massage workspace remains the visual focus.
+                visible: false // Superseded by the standalone health module below.
+                Layout.preferredWidth: Math.max(200, Math.min(210, root.width * 0.164))
+                Layout.maximumWidth: 0
                 Layout.fillHeight: true
                 radius: 8
                 color: "#ffffff"
-                border.color: displayModel ? displayModel.healthStatusColor : "#dbe5ef"
+                border.color: "#dbe5ef"
                 border.width: 1
 
                 ColumnLayout {
@@ -906,16 +909,44 @@ Rectangle {
                         Item { Layout.fillWidth: true }
                         Rectangle { Layout.preferredWidth: 68; Layout.preferredHeight: 22; radius: 11; color: displayModel ? displayModel.healthStatusColor : "#8A94A6"; Text { anchors.centerIn: parent; text: displayModel ? displayModel.healthStatusLabel : "等待接收"; font.pixelSize: 10; color: "white" } }
                     }
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.preferredHeight: 67
+                        radius: 6; color: "#f8fafc"; border.color: "#e6edf4"
+                        ColumnLayout {
+                            anchors.fill: parent; anchors.margins: 7; spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text { text: "身体数据"; font.pixelSize: 10; color: "#64748b" }
+                                Item { Layout.fillWidth: true }
+                                Text { text: displayModel ? displayModel.healthBodyMetricsSourceText : "可手动录入"; font.pixelSize: 9; color: "#8a94a6"; elide: Text.ElideRight; Layout.maximumWidth: 66 }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 5
+                                Text { text: "身高 " + (displayModel ? displayModel.healthHeightText : "--"); font.pixelSize: 10; color: "#334155"; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { text: "体重 " + (displayModel ? displayModel.healthWeightText : "--"); font.pixelSize: 10; color: "#334155"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text { text: "BMI " + (displayModel ? displayModel.healthBmiText : "--"); font.pixelSize: 11; font.weight: Font.DemiBold; color: "#334155"; Layout.fillWidth: true }
+                                Button {
+                                    id: editBodyMetrics; Layout.preferredWidth: 46; Layout.preferredHeight: 20; text: "录入"
+                                    background: Rectangle { color: editBodyMetrics.hovered ? "#e8f8f4" : "#f2f8f6"; radius: 5; border.color: "#bfe5db" }
+                                    contentItem: Text { text: editBodyMetrics.text; color: "#0b6b5e"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    onClicked: bodyMetricsPopup.open()
+                                }
+                            }
+                        }
+                    }
                     GridLayout {
-                        Layout.fillWidth: true; columns: 2; rowSpacing: 8; columnSpacing: 12
-                        Text { text: "心率"; font.pixelSize: 11; color: "#64748b" }
-                            Text { text: displayModel ? displayModel.healthHeartRateText : "-"; font.pixelSize: 13; font.weight: Font.Bold; color: "#334155" }
-                        Text { text: "血氧"; font.pixelSize: 11; color: "#64748b" }
-                            Text { text: displayModel ? displayModel.healthSpo2Text : "-"; font.pixelSize: 13; font.weight: Font.Bold; color: "#334155" }
-                        Text { text: "体温"; font.pixelSize: 11; color: "#64748b" }
-                            Text { text: displayModel ? displayModel.healthTemperatureText : "-"; font.pixelSize: 13; font.weight: Font.Bold; color: "#334155" }
-                        Text { text: "电量"; font.pixelSize: 11; color: "#64748b" }
-                            Text { text: displayModel ? displayModel.healthBatteryText : "-"; font.pixelSize: 13; font.weight: Font.Bold; color: "#334155" }
+                        Layout.fillWidth: true; columns: 2; rowSpacing: 5; columnSpacing: 8
+                        Text { text: "心率"; font.pixelSize: 10; color: "#64748b" }
+                        Text { text: displayModel ? displayModel.healthHeartRateText : "--"; font.pixelSize: 12; font.weight: Font.DemiBold; color: "#334155" }
+                        Text { text: "血氧"; font.pixelSize: 10; color: "#64748b" }
+                        Text { text: displayModel ? displayModel.healthSpo2Text : "--"; font.pixelSize: 12; font.weight: Font.DemiBold; color: "#334155" }
+                        Text { text: "体温"; font.pixelSize: 10; color: "#64748b" }
+                        Text { text: displayModel ? displayModel.healthTemperatureText : "--"; font.pixelSize: 12; font.weight: Font.DemiBold; color: "#334155" }
+                        Text { text: "电量"; font.pixelSize: 10; color: "#64748b" }
+                        Text { text: displayModel ? displayModel.healthBatteryText : "--"; font.pixelSize: 12; font.weight: Font.DemiBold; color: "#334155" }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#e1eaf3" }
                     Text { text: displayModel ? displayModel.healthReceiverStatusText : "接收器状态未知"; font.pixelSize: 11; color: displayModel && displayModel.healthReceiverRunning ? "#0B8F77" : "#D9822B"; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -928,18 +959,20 @@ Rectangle {
                             contentItem: Text { text: healthStopPanel.text; color: "#b42323"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             onClicked: root.healthReceiverStopClicked() }
                     }
-                    Text { text: displayModel ? displayModel.healthMessage : "等待接收"; font.pixelSize: 10; color: "#64748b"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: displayModel ? displayModel.healthMessage : "等待首条有效体征数据"; font.pixelSize: 10; color: "#64748b"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 }
             }
 
             Rectangle {
                 // Keep charts in their own right-hand column so each trace is
                 // readable at the default window size.
-                Layout.preferredWidth: 330
+                visible: false // Superseded by the standalone health module below.
+                Layout.preferredWidth: Math.max(260, Math.min(280, root.width * 0.218))
+                Layout.maximumWidth: 0
                 Layout.fillHeight: true
                 radius: 8
                 color: "#ffffff"
-                border.color: displayModel ? displayModel.healthStatusColor : "#dbe5ef"
+                border.color: "#dbe5ef"
                 border.width: 1
 
                 ColumnLayout {
@@ -951,14 +984,14 @@ Rectangle {
                         Layout.fillWidth: true
                         Text { text: "体征趋势"; font.pixelSize: 14; font.weight: Font.Bold; color: "#1f2a37"; font.family: "PingFang SC, Microsoft YaHei UI" }
                         Item { Layout.fillWidth: true }
-                        Text { text: "最近 10 分钟"; font.pixelSize: 10; color: "#64748b" }
+                        Text { text: "最近 1 分钟 · 5 秒/次"; font.pixelSize: 10; color: "#64748b" }
                     }
 
                     Repeater {
                         model: [
-                            { name: "心率", unit: "bpm", values: displayModel ? displayModel.healthHeartRateTrend : [], color: "#e85d75" },
-                            { name: "血氧", unit: "%", values: displayModel ? displayModel.healthSpo2Trend : [], color: "#3d8bfd" },
-                            { name: "体温", unit: "℃", values: displayModel ? displayModel.healthTemperatureTrend : [], color: "#f0a542" }
+                            { name: "心率", unit: "bpm", decimals: 0, values: displayModel ? displayModel.healthHeartRateTrend : [], color: "#e85d75" },
+                            { name: "血氧", unit: "%", decimals: 0, values: displayModel ? displayModel.healthSpo2Trend : [], color: "#3d8bfd" },
+                            { name: "体温", unit: "℃", decimals: 1, values: displayModel ? displayModel.healthTemperatureTrend : [], color: "#f0a542" }
                         ]
                         delegate: Canvas {
                             id: trendChart
@@ -968,6 +1001,7 @@ Rectangle {
                             property color trendColor: modelData.color
                             property string trendName: modelData.name
                             property string trendUnit: modelData.unit
+                            property int trendDecimals: modelData.decimals
                             Component.onCompleted: requestPaint()
                             onTrendValuesChanged: requestPaint()
                             onWidthChanged: requestPaint()
@@ -977,7 +1011,7 @@ Rectangle {
                                 var ctx = getContext("2d")
                                 ctx.clearRect(0, 0, width, height)
                                 var values = trendValues || []
-                                var left = 37, right = 9, top = 24, bottom = height - 17
+                                var left = 8, right = 8, top = 29, bottom = height - 12
                                 ctx.font = "11px sans-serif"
                                 ctx.fillStyle = "#334155"
                                 ctx.fillText(trendName + "（" + trendUnit + "）", 1, 13)
@@ -1000,10 +1034,6 @@ Rectangle {
                                     var gridY = top + grid * (bottom - top) / 2
                                     ctx.beginPath(); ctx.moveTo(left, gridY); ctx.lineTo(width - right, gridY); ctx.stroke()
                                 }
-                                ctx.font = "9px sans-serif"
-                                ctx.fillStyle = "#8a94a6"
-                                ctx.fillText(high.toFixed(1), 1, top + 3)
-                                ctx.fillText(low.toFixed(1), 1, bottom + 3)
                                 ctx.strokeStyle = trendColor
                                 ctx.lineWidth = 2
                                 ctx.lineJoin = "round"
@@ -1016,17 +1046,29 @@ Rectangle {
                                 }
                                 ctx.stroke()
                                 ctx.fillStyle = trendColor
+                                ctx.font = "8px sans-serif"
+                                ctx.textAlign = "center"
                                 for (var dot = 0; dot < values.length; dot++) {
                                     var dotX = left + dot * (width - left - right) / (values.length - 1)
                                     var dotY = bottom - (values[dot] - low) * (bottom - top) / (high - low)
                                     ctx.beginPath(); ctx.arc(dotX, dotY, 2.5, 0, Math.PI * 2); ctx.fill()
+                                    ctx.fillText(values[dot].toFixed(trendDecimals), dotX, Math.max(top + 8, dotY - 6))
                                 }
+                                ctx.textAlign = "left"
                             }
                         }
                     }
                     Item { Layout.fillHeight: true }
-                    Text { text: displayModel ? displayModel.healthMessage : "等待接收"; font.pixelSize: 10; color: "#64748b"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: displayModel ? displayModel.healthMessage : "等待首条有效体征数据"; font.pixelSize: 10; color: "#64748b"; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                 }
+            }
+
+            Loader {
+                id: standaloneHealthPanel
+                Layout.preferredWidth: 500
+                Layout.fillHeight: true
+                source: healthPanelUrl
+                onLoaded: if (item) item.healthModel = healthPanelModel
             }
         }
 
@@ -1166,10 +1208,21 @@ Rectangle {
                         id: quickDetectBack
                         Layout.preferredWidth: 112
                         Layout.preferredHeight: 30
-                        text: "检测旁光经"
+                        text: "检测膀胱经"
                         background: Rectangle { color: quickDetectBack.pressed ? "#d7f0eb" : (quickDetectBack.hovered ? "#e8f8f4" : "#eef8f5"); radius: 8; border.color: "#bfe5db" }
                         contentItem: Text { text: quickDetectBack.text; font.pixelSize: 12; color: "#0b6b5e"; font.family: "PingFang SC, Microsoft YaHei UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        onClicked: root.quickCommand("检测旁光经")
+                        onClicked: root.quickCommand("检测膀胱经")
+                    }
+
+                    Button {
+                        id: quickShoulderCheck
+                        Layout.preferredWidth: 112
+                        Layout.preferredHeight: 30
+                        text: "高低肩检测"
+                        enabled: displayModel ? !displayModel.shoulderCheckRunning : true
+                        background: Rectangle { color: quickShoulderCheck.enabled ? (quickShoulderCheck.pressed ? "#d7f0eb" : (quickShoulderCheck.hovered ? "#e8f8f4" : "#eef8f5")) : "#eef2f5"; radius: 8; border.color: "#bfe5db" }
+                        contentItem: Text { text: quickShoulderCheck.text; font.pixelSize: 12; color: quickShoulderCheck.enabled ? "#0b6b5e" : "#94a3b8"; font.family: "PingFang SC, Microsoft YaHei UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: root.shoulderCheckClicked()
                     }
 
                     Button {
@@ -1190,6 +1243,16 @@ Rectangle {
                         background: Rectangle { color: quickShunJin.pressed ? "#d7f0eb" : (quickShunJin.hovered ? "#e8f8f4" : "#eef8f5"); radius: 8; border.color: "#bfe5db" }
                         contentItem: Text { text: quickShunJin.text; font.pixelSize: 12; color: "#0b6b5e"; font.family: "PingFang SC, Microsoft YaHei UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         onClicked: root.quickCommand("开始顺筋")
+                    }
+
+                    Button {
+                        id: quickRouFa
+                        Layout.preferredWidth: 76
+                        Layout.preferredHeight: 30
+                        text: "揉法"
+                        background: Rectangle { color: quickRouFa.pressed ? "#d7f0eb" : (quickRouFa.hovered ? "#e8f8f4" : "#eef8f5"); radius: 8; border.color: "#bfe5db" }
+                        contentItem: Text { text: quickRouFa.text; font.pixelSize: 12; color: "#0b6b5e"; font.family: "PingFang SC, Microsoft YaHei UI"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        onClicked: root.quickCommand("开始揉法")
                     }
 
                     Button {
@@ -1232,9 +1295,16 @@ Rectangle {
                         onClicked: root.quickCommand("检测状态")
                     }
 
-                    Item { Layout.fillWidth: true }
+                    Text {
+                        Layout.fillWidth: true
+                        text: displayModel ? displayModel.shoulderCheckMessage : ""
+                        font.pixelSize: 10
+                        color: "#64748b"
+                        elide: Text.ElideRight
+                    }
                 }
             }
         }
     }
+
 }

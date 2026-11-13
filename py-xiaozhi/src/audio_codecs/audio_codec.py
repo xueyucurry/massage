@@ -1,7 +1,9 @@
 import asyncio
 import gc
 import time
+import wave
 from collections import deque
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -810,6 +812,32 @@ class AudioCodec:
             logger.warning(f"Opus解码失败，丢弃此帧: {e}")
         except Exception as e:
             logger.warning(f"音频写入失败，丢弃此帧: {e}")
+
+    async def play_local_wav(self, path: Path) -> None:
+        """Play an approved recording through the same output as Xiaozhi TTS."""
+        if self.output_stream is None:
+            raise RuntimeError("扬声器输出流未初始化")
+        if not self.output_stream.active:
+            await self.start_streams()
+        if not self.output_stream.active:
+            raise RuntimeError("扬声器输出流未启动")
+        with wave.open(str(path), "rb") as source:
+            if source.getnchannels() != 1 or source.getsampwidth() != 2:
+                raise ValueError("固定播报必须是单声道 16 位 PCM")
+            source_rate = source.getframerate()
+            samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2")
+        if source_rate != AudioConfig.OUTPUT_SAMPLE_RATE:
+            samples = soxr.resample(
+                samples.astype(np.float32), source_rate, AudioConfig.OUTPUT_SAMPLE_RATE
+            )
+            samples = np.clip(samples, -32768, 32767).astype(np.int16)
+        frame_size = AudioConfig.OUTPUT_FRAME_SIZE * AudioConfig.CHANNELS
+        for offset in range(0, len(samples), frame_size):
+            frame = samples[offset:offset + frame_size]
+            if len(frame) < frame_size:
+                frame = np.pad(frame, (0, frame_size - len(frame)))
+            self._put_audio_data_safe(self._output_buffer, frame)
+        await self.wait_for_audio_complete(timeout=len(samples) / AudioConfig.OUTPUT_SAMPLE_RATE + 2)
 
     async def wait_for_audio_complete(self, timeout=10.0):
         """

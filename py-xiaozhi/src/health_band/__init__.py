@@ -2,5 +2,6 @@
 
 from .reader import HealthBandReader
 from .receiver_control import HealthReceiverController
+from .body_metrics import BodyMetricsStore
 
-__all__ = ["HealthBandReader", "HealthReceiverController"]
+__all__ = ["BodyMetricsStore", "HealthBandReader", "HealthReceiverController"]

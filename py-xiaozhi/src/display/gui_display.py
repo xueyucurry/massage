@@ -7,20 +7,28 @@ import asyncio
 import json
 import os
 import signal
+import sys
+from datetime import datetime, timedelta, timezone
 from abc import ABCMeta
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt5.QtCore import QObject, Qt, QTimer, QUrl
+from PyQt5.QtCore import QObject, QProcess, Qt, QTimer, QUrl
 from PyQt5.QtGui import QCursor, QFont
 from PyQt5.QtQuickWidgets import QQuickWidget
 from PyQt5.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from src.display.base_display import BaseDisplay
 from src.display.gui_display_model import GuiDisplayModel
-from src.health_band import HealthBandReader, HealthReceiverController
 from src.utils.resource_finder import find_assets_dir
+
+
+# The health project owns its own GUI module.  The host only exposes its model
+# and QML component; it contains no health storage or business logic.
+HEALTH_GUI_DIR = Path(__file__).resolve().parents[3] / "health" / "gui"
+if str(HEALTH_GUI_DIR) not in sys.path:
+    sys.path.insert(0, str(HEALTH_GUI_DIR))
+from model import HealthGuiModel
 
 
 # 创建兼容的元类
@@ -33,9 +41,9 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
 
     # 常量定义
     EMOTION_EXTENSIONS = (".gif", ".png", ".jpg", ".jpeg", ".webp")
-    # The dedicated trend column keeps the charts legible instead of squeezing
-    # them into the health-status card.
-    DEFAULT_WINDOW_SIZE = (1460, 620)
+    # Compact enough for ordinary displays; smaller screens are scaled by
+    # ``_calculate_window_size`` while the centre massage panel keeps flex space.
+    DEFAULT_WINDOW_SIZE = (1280, 620)
     DEFAULT_FONT_SIZE = 12
     QUIT_TIMEOUT_MS = 3000
 
@@ -51,6 +59,8 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
 
         # 数据模型
         self.display_model = GuiDisplayModel()
+        self.health_panel_model = HealthGuiModel()
+        self.health_panel_model.alertRaised.connect(self._on_health_alert)
 
         # 表情管理
         self._emotion_cache = {}
@@ -62,13 +72,10 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         self.current_status = ""
         self.is_connected = True
         self._massage_state_timer = None
-        self._health_state_timer = None
         self._massage_state_path = self._resolve_massage_state_path()
         self._last_massage_state_payload = None
-        self._health_reader = HealthBandReader()
-        self._health_receiver_controller = HealthReceiverController()
-        self._health_session_started_at = datetime.now(timezone.utc)
-        self._last_health_state_payload = None
+        self._shoulder_check_process = None
+        self._shoulder_check_last_line = ""
 
         # 窗口拖动状态
         self._dragging = False
@@ -315,7 +322,8 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         # 注册数据模型到 QML 上下文
         qml_context = self.qml_widget.rootContext()
         qml_context.setContextProperty("displayModel", self.display_model)
-
+        qml_context.setContextProperty("healthPanelModel", self.health_panel_model)
+        qml_context.setContextProperty("healthPanelUrl", QUrl.fromLocalFile(str(HEALTH_GUI_DIR / "HealthPanel.qml")))
         # 加载 QML 文件
         qml_file = Path(__file__).parent / "gui_display.qml"
         self.qml_widget.setSource(QUrl.fromLocalFile(str(qml_file)))
@@ -337,7 +345,6 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         """
         await self.update_emotion("neutral")
         self._setup_massage_state_monitor()
-        self._setup_health_state_monitor()
 
         # 根据配置决定显示模式
         if getattr(self, "_is_fullscreen", False):
@@ -364,7 +371,6 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         self._massage_state_timer = QTimer(self.root)
         self._massage_state_timer.timeout.connect(self._refresh_massage_state)
         self._massage_state_timer.start(800)
-
     def _refresh_massage_state(self):
         """
         从 current_session.json 读取最新按摩任务状态.
@@ -383,30 +389,22 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
             return
         self._last_massage_state_payload = payload_key
         self.display_model.update_massage_state(payload)
+        session_key = str(payload.get("session_id") or "")
+        active = bool(session_key and str(payload.get("status") or "").lower() in {"running", "pausing", "paused"})
+        self.health_panel_model.set_massage_session(session_key, active)
 
-    def _setup_health_state_monitor(self):
-        """低频读取手环 SQLite；不订阅 MQTT，也不影响接收器。"""
-        self._refresh_health_state()
-        self._health_state_timer = QTimer(self.root)
-        self._health_state_timer.timeout.connect(self._refresh_health_state)
-        # 手环约每 30 秒上报；10 秒读取可在一轮内显示新值，同时避免无意义轮询。
-        self._health_state_timer.start(10000)
-        self._refresh_health_receiver_state()
-
-    def _refresh_health_state(self):
-        payload = self._health_reader.summary(since=self._health_session_started_at)
-        payload_key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        if payload_key == self._last_health_state_payload:
-            self._refresh_health_receiver_state()
-            return
-        self._last_health_state_payload = payload_key
-        self.display_model.update_health_state(payload)
-        self._refresh_health_receiver_state()
-
-    def _refresh_health_receiver_state(self):
-        self.display_model.update_health_receiver_state(
-            self._health_receiver_controller.status()
-        )
+    def _on_health_alert(self, speech: str, priority: int) -> None:
+        """Bridge a health-module event to Xiaozhi's restricted voice path."""
+        self.logger.warning("体征预警（优先级 %s）：%s", priority, speech)
+        try:
+            from src.application import Application
+            app = Application.get_instance()
+            if not app.running:
+                self.logger.warning("体征预警未播报：小智应用尚未运行")
+                return
+            app.spawn(app.announce_health_alert(speech, priority), "health:announce")
+        except Exception as exc:
+            self.logger.warning("体征预警语音调度失败: %s", exc)
 
     # =========================================================================
     # 信号连接
@@ -430,8 +428,7 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
             "modeButtonClicked": self._on_mode_button_click,
             "sendButtonClicked": self._on_send_button_click,
             "settingsButtonClicked": self._on_settings_button_click,
-            "healthReceiverStartClicked": self._on_health_receiver_start,
-            "healthReceiverStopClicked": self._on_health_receiver_stop,
+            "shoulderCheckClicked": self._on_shoulder_check_click,
         }
 
         # 标题栏控制信号映射
@@ -524,35 +521,56 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         except Exception as e:
             self.logger.error(f"打开设置窗口失败: {e}", exc_info=True)
 
-    def _on_health_receiver_start(self):
-        self._change_health_receiver("start")
+    def _on_shoulder_check_click(self):
+        """Run the same camera-only detector as ``./massage shoulder-check``."""
+        if self._shoulder_check_process is not None:
+            return
+        repo_root = Path(__file__).resolve().parents[3]
+        process = QProcess(self)
+        process.setWorkingDirectory(str(repo_root))
+        process.setProgram(str(repo_root / "massage"))
+        process.setArguments(["shoulder-check"])
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.readyReadStandardOutput.connect(self._read_shoulder_check_output)
+        process.errorOccurred.connect(self._on_shoulder_check_error)
+        process.finished.connect(self._on_shoulder_check_finished)
+        self._shoulder_check_process = process
+        self._shoulder_check_last_line = ""
+        self.display_model.update_shoulder_check(True, "正在启动高低肩检测，检测画面将单独打开")
+        process.start()
 
-    def _on_health_receiver_stop(self):
-        self._change_health_receiver("stop")
+    def _read_shoulder_check_output(self):
+        process = self._shoulder_check_process
+        if process is None:
+            return
+        output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        for line in output.splitlines():
+            if line.strip():
+                self.logger.info("高低肩检测: %s", line)
+                self._shoulder_check_last_line = line.strip()
+                self.display_model.update_shoulder_check(True, line.strip())
 
-    def _change_health_receiver(self, action: str):
-        """Run receiver lifecycle work off the Qt GUI thread."""
-        async def change():
-            controller_method = (
-                self._health_receiver_controller.start
-                if action == "start"
-                else self._health_receiver_controller.stop
+    def _on_shoulder_check_error(self, error):
+        process = self._shoulder_check_process
+        if process is not None:
+            failed_to_start = error == QProcess.FailedToStart
+            self.display_model.update_shoulder_check(
+                not failed_to_start, f"高低肩检测出错：{process.errorString()}"
             )
-            state = await asyncio.to_thread(controller_method)
-            if action == "start" and state.get("success"):
-                self._health_session_started_at = datetime.now(timezone.utc)
-            self.display_model.update_health_receiver_state(state)
-            self._refresh_health_state()
+            if failed_to_start:
+                self._shoulder_check_process = None
+                process.deleteLater()
 
-        try:
-            task = asyncio.create_task(change())
-            task.add_done_callback(
-                lambda task: task.cancelled()
-                or not task.exception()
-                or self.logger.error(f"手环接收器{action}失败: {task.exception()}")
-            )
-        except RuntimeError as exc:
-            self.logger.error(f"无法调度手环接收器{action}: {exc}")
+    def _on_shoulder_check_finished(self, exit_code, _exit_status):
+        self._read_shoulder_check_output()
+        process = self._shoulder_check_process
+        self._shoulder_check_process = None
+        if process is not None:
+            process.deleteLater()
+        message = "高低肩检测已结束" if exit_code == 0 else (
+            self._shoulder_check_last_line or f"高低肩检测未完成（退出码 {exit_code}）"
+        )
+        self.display_model.update_shoulder_check(False, message)
 
     def _dispatch_callback(self, callback_name: str, *args):
         """
@@ -720,6 +738,13 @@ class GuiDisplay(BaseDisplay, QObject, metaclass=CombinedMeta):
         """
         self.logger.info("开始退出应用程序...")
         self._running = False
+
+        process = self._shoulder_check_process
+        if process is not None and process.state() != QProcess.NotRunning:
+            process.terminate()
+            if not process.waitForFinished(1000):
+                process.kill()
+                process.waitForFinished(1000)
 
         if self.system_tray:
             self.system_tray.hide()

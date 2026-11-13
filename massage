@@ -54,6 +54,8 @@ Usage:
   ./massage stop       Stop FAIRINO ROS2, MoveIt, and residual ft.py runner
   ./massage clean      Kill residual ROS2/FAIRINO/MoveIt/ft.py processes
   ./massage gui        Start py-xiaozhi GUI
+  ./massage band-demo start  Build one timed database with all cases and switch wristband reads
+  ./massage band-demo status|stop  Inspect or restore real wristband reads
   ./massage gesture-check Open a camera-only hand-gesture preview (no robot motion)
   ./massage shoulder-check Show side-lying shoulder symmetry (camera only)
   ./massage force-monitor Open the read-only force sensor monitor
@@ -71,6 +73,7 @@ Notes:
   start runs ft.py in the foreground after ROS2 probe passes.
   start and stop return to the recorded pose when MASSAGE_HOME_ON_START/STOP is enabled.
   gui returns to the recorded pose before opening py-xiaozhi when MASSAGE_HOME_ON_GUI_START is enabled.
+  band-demo changes wristband reads only; normal GUI, voice and massage controls remain live.
   stop is not a physical emergency stop. Use the robot emergency stop button when needed.
 
 Environment:
@@ -1340,6 +1343,9 @@ main() {
       ;;
     gui)
       run_xiaozhi_gui "$@"
+      ;;
+    band-demo)
+      python3 "${ROOT_DIR}/health/band_demo.py" "$@"
       ;;
     gesture-check)
       run_gesture_check "$@"

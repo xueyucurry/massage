@@ -2,6 +2,10 @@
 .runtime/
 data/*.sqlite3
 data/*.sqlite3-*
+data/body_metrics.json
+data/gui_health_settings.json
+data/band_demo_control.json
+data/bmi_massage_recommendation.json
 health.json
 health_alert_policy.json
 __pycache__/

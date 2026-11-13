@@ -33,6 +33,7 @@ from src.utils.opus_loader import setup_opus
 logger = get_logger(__name__)
 setup_opus()
 
+
 _CRITICAL_COMMAND_PREFIXES = (
     "请",
     "小智",
@@ -66,6 +67,20 @@ _PAUSE_MASSAGE_COMMANDS = {
     "等一下",
     "别动",
 }
+_ACUTE_SYMPTOMS = ("胸痛", "胸闷", "呼吸困难", "喘不过气", "晕厥", "要晕倒", "头晕", "心慌")
+
+
+def reports_acute_symptom(text: str) -> bool:
+    """Recognize a reported symptom without treating an explicit denial as one."""
+    normalized = re.sub(r"[\s，。！？、,.!?]+", "", text or "")
+    for symptom in _ACUTE_SYMPTOMS:
+        offset = 0
+        while (index := normalized.find(symptom, offset)) >= 0:
+            preceding = normalized[max(0, index - 3):index]
+            if not preceding.endswith(("不", "没", "没有", "无")):
+                return True
+            offset = index + len(symptom)
+    return False
 
 
 def classify_critical_massage_command(text: str) -> str | None:
@@ -145,6 +160,14 @@ class Application:
         self._user_interaction_active = False
         self._assistant_response_active = False
         self._unsolicited_tts_blocked = False
+        self._health_speech_deadline = 0.0
+        self._health_speech_active = False
+        self._health_tts_sentence_seen = False
+        self._health_tts_event = None
+        self._tts_stop_event = None
+        self._health_announcement_seq = 0
+        self._health_audio_lock: asyncio.Lock | None = None
+        self._health_reduce_deadline = 0.0
         self._interaction_response_deadline = 0.0
         self._interaction_response_window_s = max(
             5.0,
@@ -193,7 +216,8 @@ class Application:
                 logger.info("按摩专用模式已启用，日程提醒插件已禁用")
             else:
                 plugins.append(CalendarPlugin())
-            plugins.extend([UIPlugin(mode=mode), ShortcutsPlugin()])
+            plugins.append(UIPlugin(mode=mode))
+            plugins.append(ShortcutsPlugin())
             push_to_talk_only = os.getenv(
                 "XIAOZHI_PUSH_TO_TALK_ONLY", "0"
             ).strip().lower() in {"1", "true", "yes", "on"}
@@ -266,6 +290,7 @@ class Application:
         self._state_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._critical_massage_lock = asyncio.Lock()
+        self._health_audio_lock = asyncio.Lock()
 
     def _set_protocol(self, protocol_type: str) -> None:
         logger.debug("设置协议类型: %s", protocol_type)
@@ -300,6 +325,112 @@ class Application:
             self._user_interaction_active
             and time.monotonic() <= self._interaction_response_deadline
         )
+
+    def _health_speech_authorized(self) -> bool:
+        return self._health_speech_deadline > time.monotonic()
+
+    async def announce_health_alert(self, speech: str, priority: int) -> None:
+        """Play one approved local recording without requesting a model reply."""
+        if not self.running or not speech:
+            return
+        repo_root = Path(__file__).resolve().parents[2]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from health.voice_assets import alert_audio_path
+
+        audio_path = alert_audio_path(speech)
+        if audio_path is None:
+            logger.warning("未批准的体征播报文案，已跳过: %s", speech)
+            return
+        if not audio_path.is_file():
+            logger.error("体征播报音频缺失: %s", audio_path)
+            return
+        busy = self._response_is_authorized() or self.device_state == DeviceState.SPEAKING
+        if busy and priority < 2:
+            logger.info("当前正在语音交互，跳过低优先级体征播报")
+            return
+        if busy:
+            for _ in range(10):
+                await asyncio.sleep(0.2)
+                busy = self._response_is_authorized() or self.device_state == DeviceState.SPEAKING
+                if not busy:
+                    break
+            if busy:
+                was_speaking = self.device_state == DeviceState.SPEAKING
+                stop_event = asyncio.Event() if was_speaking else None
+                self._tts_stop_event = stop_event
+                try:
+                    if self.protocol is not None:
+                        await self.protocol.send_abort_speaking(None)
+                    if stop_event is not None:
+                        try:
+                            await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("上一段语音未确认结束，继续播放本地紧急预警")
+                finally:
+                    if self._tts_stop_event is stop_event:
+                        self._tts_stop_event = None
+                self.finish_user_interaction("urgent-health-alert")
+                audio_plugin = self.plugins.get_plugin("audio")
+                if audio_plugin is not None:
+                    await audio_plugin.codec.clear_audio_queue()
+        audio_plugin = self.plugins.get_plugin("audio")
+        codec = audio_plugin.codec if audio_plugin is not None else None
+        if codec is None:
+            logger.error("体征播报失败：小智扬声器输出流不可用")
+            return
+        if self._health_audio_lock is None:
+            self._health_audio_lock = asyncio.Lock()
+        if priority >= 2 and self._health_audio_lock.locked():
+            await codec.clear_audio_queue()
+        async with self._health_audio_lock:
+            try:
+                logger.info("开始通过小智扬声器播放固定体征预警（优先级 %s）：%s", priority, speech)
+                await codec.play_local_wav(audio_path)
+                logger.info("固定体征预警播放完成：%s", speech)
+            except Exception as exc:
+                logger.error("固定体征预警播放失败：%s", exc)
+
+    async def _apply_confirmed_health_reduction(self) -> None:
+        """Apply only an explicit reply, through the existing live force API."""
+        if self.protocol:
+            await self.protocol.send_abort_speaking(None)
+        from src.mcp.tools.fairino_massage.runtime import get_runtime
+
+        runtime = get_runtime()
+        status = await runtime.status()
+        state = status.get("state") or {}
+        if state.get("status") not in {"running", "paused"}:
+            return
+        try:
+            current = float(state.get("force_target_n"))
+        except (TypeError, ValueError):
+            return
+        delta = min(5.0, max(0.1, current * 0.1))
+        result = await runtime.adjust_force(direction="softer", delta_n=delta)
+        logger.info("体征预警后明确确认减力: %s", result.get("message"))
+        self._health_reduce_deadline = 0.0
+        message = str(result.get("message") or "按摩力度调整未成功")
+        self.set_chat_message("assistant", message)
+        self.finish_user_interaction("health-force-confirmed")
+        await asyncio.sleep(0.2)
+        await self.announce_health_alert(message, 3)
+
+    def _is_health_reduce_confirmation(self, text: str) -> bool:
+        if time.monotonic() > self._health_reduce_deadline:
+            return False
+        normalized = re.sub(r"[\s，。！？、,.!?]+", "", text or "")
+        return normalized in {"是", "要", "好的", "好", "可以", "降低力度", "降低按摩力度", "减小力度", "减轻力度", "轻一点", "是降低力度", "好降低力度", "请降低按摩力度"}
+
+    async def handle_health_user_text(self, text: str) -> bool:
+        """Handle explicit health responses before forwarding text to Xiaozhi."""
+        if reports_acute_symptom(text):
+            await self.dispatch_local_critical_massage_command("暂停按摩", "symptom")
+            return True
+        if self._is_health_reduce_confirmation(text):
+            await self._apply_confirmed_health_reduction()
+            return True
+        return False
 
     async def dispatch_local_critical_massage_command(
         self, text: str, source: str
@@ -505,7 +636,7 @@ class Application:
         #     self._shutdown_event.set()
 
     def _on_incoming_audio(self, data: bytes):
-        if self._unsolicited_tts_blocked or not self._assistant_response_active:
+        if self._unsolicited_tts_blocked or not (self._assistant_response_active or (self._health_speech_active and self._health_speech_authorized())):
             logger.debug("忽略未由用户交互授权的音频响应")
             return
         logger.debug(f"收到二进制消息，长度: {len(data)}")
@@ -516,9 +647,15 @@ class Application:
         try:
             msg_type = json_data.get("type") if isinstance(json_data, dict) else None
             logger.info(f"收到JSON消息: type={msg_type}")
+            if msg_type == "alert":
+                logger.warning("小智服务提示：%s", str(json_data.get("text") or json_data.get("message") or json_data.get("status") or "未提供说明")[:300])
             if msg_type == "stt":
                 stt_text = str(json_data.get("text") or "").strip()
                 logger.info("STT文本: %r", stt_text)
+                if self._health_speech_authorized() and not self._user_interaction_active:
+                    # The server may echo the synthetic prompt as STT.  It is
+                    # not a user instruction and must never reach tool routing.
+                    return
                 if self.keep_listening and stt_text:
                     self.authorize_user_interaction("continuous-stt")
                 elif not self._response_is_authorized():
@@ -527,6 +664,13 @@ class Application:
                         self.protocol.send_abort_speaking(None),
                         "abort:unsolicited_stt",
                     )
+                    return
+                if reports_acute_symptom(stt_text):
+                    self.spawn(self.handle_health_user_text(stt_text), "health:symptom_pause")
+                    self.spawn(self.protocol.send_abort_speaking(None), "health:abort_symptom_stt")
+                    return
+                if self._is_health_reduce_confirmation(stt_text):
+                    self.spawn(self._apply_confirmed_health_reduction(), "health:confirmed_reduction")
                     return
                 if classify_critical_massage_command(stt_text):
                     self.spawn(
@@ -553,17 +697,31 @@ class Application:
             # 将 TTS start/stop 映射为设备状态（支持自动/实时，且不污染手动模式）
             if msg_type == "tts":
                 state = json_data.get("state")
+                if state == "stop" and self._tts_stop_event is not None:
+                    self._tts_stop_event.set()
                 tts_text = str(json_data.get("text") or "").strip()
                 if tts_text:
                     logger.info("TTS文本: %r", tts_text)
+                if state == "sentence_start" and self._health_speech_active and not self._response_is_authorized():
+                    if self._health_tts_sentence_seen:
+                        logger.info("体征短句已播报，停止小智后续展开")
+                        self._health_speech_active = False
+                        self._health_speech_deadline = 0.0
+                        self._unsolicited_tts_blocked = True
+                        self.spawn(self.protocol.send_abort_speaking(None), "health:stop_extra_speech")
+                        return
+                    self._health_tts_sentence_seen = True
                 if self._unsolicited_tts_blocked:
                     if state == "stop":
                         self._unsolicited_tts_blocked = False
                         logger.info("未授权 TTS 已结束，解除音频丢弃状态")
-                    return
+                    else:
+                        return
                 if (
-                    not self._response_is_authorized()
+                    state != "stop"
+                    and not self._response_is_authorized()
                     and not self._assistant_response_active
+                    and not self._health_speech_authorized()
                 ):
                     self._unsolicited_tts_blocked = True
                     logger.warning(
@@ -575,7 +733,12 @@ class Application:
                     )
                     return
                 if state == "start":
-                    self._assistant_response_active = True
+                    if self._health_speech_authorized() and not self._response_is_authorized():
+                        self._health_speech_active = True
+                        if self._health_tts_event is not None:
+                            self._health_tts_event.set()
+                    else:
+                        self._assistant_response_active = True
                     # 仅当保持会话且实时模式时，TTS开始期间保持LISTENING；否则显示SPEAKING
                     if (
                         self.keep_listening
@@ -618,6 +781,8 @@ class Application:
             # 转发给插件
             self.spawn(self.plugins.notify_incoming_json(json_data), "plugin:on_json")
             if msg_type == "tts" and json_data.get("state") == "stop":
+                self._health_speech_active = False
+                self._health_speech_deadline = 0.0
                 self.finish_user_interaction("tts-stop")
         except Exception:
             logger.info("收到JSON消息")

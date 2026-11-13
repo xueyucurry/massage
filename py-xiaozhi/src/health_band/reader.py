@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,14 +11,20 @@ from typing import Any, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "health" / "data" / "health_band.sqlite3"
+HEALTH_DIR = PROJECT_ROOT / "health"
+if str(HEALTH_DIR) not in sys.path:
+    sys.path.insert(0, str(HEALTH_DIR))
+from data_source import resolve_active_source
 DEFAULT_POLICY_PATH = PROJECT_ROOT / "health" / "health_alert_policy.json"
 DEFAULT_POLICY = {
-    "stale_after_seconds": 90,
-    "expected_upload_interval_seconds": 30,
+    "stale_after_seconds": 20,
+    "expected_upload_interval_seconds": 5,
     "upload_interval_factor": 2.0,
     "low_battery_percent": 20,
     "consecutive_samples": 3,
-    "trend_minutes": 10,
+    # At one wristband sample every 5 seconds, one minute gives 12 readable
+    # labelled points instead of compressing 120 labels into one small chart.
+    "trend_minutes": 1,
     "consecutive_invalid_samples": 3,
     "invalid_measurements": {
         "heart_rate_bpm": {"min_exclusive": 0},
@@ -66,7 +73,9 @@ class HealthBandReader:
     """Small read-only view over ``health/data/health_band.sqlite3``."""
 
     def __init__(self, database_path: Optional[Path | str] = None, policy_path: Optional[Path | str] = None) -> None:
-        configured = database_path or os.getenv("HEALTH_BAND_DB") or DEFAULT_DATABASE_PATH
+        source = resolve_active_source()
+        self._scheduled_demo = source.mode == "demo" and database_path is None
+        configured = database_path or source.path
         self.database_path = Path(configured).expanduser().resolve()
         self.policy_path = Path(policy_path or os.getenv("HEALTH_BAND_ALERT_POLICY") or DEFAULT_POLICY_PATH).expanduser()
 
@@ -137,8 +146,10 @@ class HealthBandReader:
     def latest(self, device_mac: str = "") -> Optional[Dict[str, Any]]:
         mac = _normalise_mac(device_mac)
         sql, params = "SELECT * FROM health_band_samples", []
+        if self._scheduled_demo:
+            sql += " WHERE julianday(received_at) <= julianday('now')"
         if mac:
-            sql += " WHERE device_mac = ?"
+            sql += " AND device_mac = ?" if self._scheduled_demo else " WHERE device_mac = ?"
             params.append(mac)
         return next(iter(self._samples(sql + " ORDER BY received_at DESC LIMIT 1", params)), None)
 
@@ -146,6 +157,8 @@ class HealthBandReader:
         hours = max(1, min(int(hours), 24 * 31))
         mac = _normalise_mac(device_mac)
         sql = "SELECT * FROM health_band_samples WHERE julianday(received_at) >= julianday('now', ?)"
+        if self._scheduled_demo:
+            sql += " AND julianday(received_at) <= julianday('now')"
         params: List[Any] = [f"-{hours} hours"]
         if mac:
             sql += " AND device_mac = ?"
@@ -156,6 +169,8 @@ class HealthBandReader:
         minutes = max(1, min(int(minutes), 24 * 31 * 60))
         mac = _normalise_mac(device_mac)
         sql = "SELECT * FROM health_band_samples WHERE julianday(received_at) >= julianday('now', ?)"
+        if self._scheduled_demo:
+            sql += " AND julianday(received_at) <= julianday('now')"
         params: List[Any] = [f"-{minutes} minutes"]
         if mac:
             sql += " AND device_mac = ?"
@@ -169,6 +184,8 @@ class HealthBandReader:
 
     def _latest_samples(self, device_mac: str, limit: int, since: Optional[datetime] = None) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM health_band_samples WHERE device_mac = ?"
+        if self._scheduled_demo:
+            sql += " AND julianday(received_at) <= julianday('now')"
         params: List[Any] = [_normalise_mac(device_mac)]
         if since:
             sql += " AND julianday(received_at) >= julianday(?)"
@@ -178,10 +195,11 @@ class HealthBandReader:
         return list(reversed(self._samples(sql, params)))
 
     def status(self, stale_after_seconds: Optional[int] = None) -> List[Dict[str, Any]]:
+        due_filter = "WHERE julianday(received_at) <= julianday('now')" if self._scheduled_demo else ""
         samples = self._samples(
-            """SELECT sample.* FROM health_band_samples AS sample
+            f"""SELECT sample.* FROM health_band_samples AS sample
             INNER JOIN (SELECT device_mac, MAX(received_at) AS last_received_at
-                        FROM health_band_samples GROUP BY device_mac) AS latest
+                        FROM health_band_samples {due_filter} GROUP BY device_mac) AS latest
             ON sample.device_mac = latest.device_mac AND sample.received_at = latest.last_received_at
             ORDER BY sample.received_at DESC""", [],
         )
@@ -207,18 +225,18 @@ class HealthBandReader:
 
         if not sample:
             if since:
-                return awaiting("正在接收数据，等待本次会话首条非零、非空的有效手环上报")
+                return awaiting("等待本次会话的首条有效体征数据")
             return {"status": "unavailable", "status_label": "未收到数据", "color": "#8A94A6", "message": "尚未收到手环数据", "age_seconds": None, "alerts": ["尚未收到手环数据"], "trends": {}}
 
         received_at = _as_utc(str(sample.get("received_at") or ""))
         if since and (not received_at or received_at < since.astimezone(timezone.utc)):
-            return awaiting("正在接收数据，等待本次会话首条非零、非空的有效手环上报")
+            return awaiting("等待本次会话的首条有效体征数据")
 
         # The GUI only enters its live-data view after a complete vital-sign
         # sample arrives.  A zero or missing vital sign is normally a sensor
         # acquisition failure, not a value to present as the current reading.
         if result.get("invalid_measurements"):
-            return awaiting("正在接收数据，等待下一条非零、非空的有效手环上报")
+            return awaiting("本次体征数据无效，等待下一次有效上报")
 
         age_seconds = None if not received_at else max(0, int((datetime.now(timezone.utc) - received_at).total_seconds()))
         alerts: List[str] = []
@@ -281,7 +299,7 @@ class HealthBandReader:
             status, label, color = "alert", "需要关注", "#D9822B"
         else:
             status, label, color = "normal", "数据正常", "#12A87A"
-        result.update({"status": status, "status_label": label, "color": color, "message": alerts[0] if alerts else "手环数据已连接", "age_seconds": age_seconds, "alerts": alerts, "trends": trends})
+        result.update({"status": status, "status_label": label, "color": color, "message": alerts[0] if alerts else "正在接收手环体征数据", "age_seconds": age_seconds, "alerts": alerts, "trends": trends})
         return result
 
     def summary(self, stale_after_seconds: Optional[int] = None, since: Optional[datetime] = None) -> Dict[str, Any]:

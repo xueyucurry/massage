@@ -161,6 +161,8 @@ class UIPlugin(Plugin):
         """
         发送文本到服务端.
         """
+        if hasattr(self.app, "handle_health_user_text") and await self.app.handle_health_user_text(text):
+            return
         self.app.authorize_user_interaction("text-input")
         if hasattr(self.app, "dispatch_local_critical_massage_command"):
             self.app.spawn(

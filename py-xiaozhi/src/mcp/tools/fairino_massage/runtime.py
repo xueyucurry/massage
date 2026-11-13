@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -18,6 +19,10 @@ from src.utils.logging_config import get_logger
 logger = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]
+HEALTH_DIR = PROJECT_ROOT / "health"
+if str(HEALTH_DIR) not in sys.path:
+    sys.path.insert(0, str(HEALTH_DIR))
+from massage_profile import MassageRecommendationStore
 FAIRINO_DIR = PROJECT_ROOT / "robots" / "fairino"
 STATE_DIR = FAIRINO_DIR / "ft_agent_state"
 STATE_PATH = STATE_DIR / "current_session.json"
@@ -1578,6 +1583,25 @@ class FairinoMassageRuntime:
                 normalized_actions,
                 resume,
             )
+            # BMI is a single-use recommendation saved with the body metrics. A matching
+            # manual preset becomes this run's baseline, then the BMI factor is
+            # applied to it.  The existing absolute force clamp remains the
+            # final safety boundary.
+            bmi_recommendation = None
+            if not resume and selected_force_target_n is not None:
+                bmi_baseline_force_n = float(selected_force_target_n)
+                bmi_recommendation = MassageRecommendationStore().consume(selected_force_target_n)
+                if bmi_recommendation is not None:
+                    selected_force_target_n = _clamp_force_target_n(
+                        float(bmi_recommendation["requested_force_n"])
+                    )
+                    logger.info(
+                        "[FairinoMassage] 已读取 BMI 建议: category=%s factor=%.2f baseline=%.3f target=%.3f",
+                        bmi_recommendation.get("category"),
+                        float(bmi_recommendation["factor"]),
+                        float(bmi_recommendation.get("baseline_force_n", bmi_baseline_force_n)),
+                        selected_force_target_n,
+                    )
             last_pending_force_preset = state.get("last_pending_force_preset")
             if not resume and isinstance(pending_force_preset, dict):
                 last_pending_force_preset = dict(pending_force_preset)
@@ -1591,12 +1615,19 @@ class FairinoMassageRuntime:
                 and normalized_actions == ["shun_jin"]
             )
             if shun_only:
-                state_message = (
-                    f"正在启动顺筋按摩，目标力度 {selected_force_target_n:.1f}N"
-                )
-                result_message = (
-                    f"顺筋按摩任务已启动，目标力度为 {selected_force_target_n:g} 牛"
-                )
+                if bmi_recommendation is not None:
+                    state_message = (
+                        f"正在启动顺筋按摩，采用 BMI 建议 {float(bmi_recommendation['factor']):.2f}×，"
+                        f"基准 {bmi_baseline_force_n:.1f}N，目标力度 {selected_force_target_n:.1f}N"
+                    )
+                    result_message = (
+                        f"根据 BMI 建议，您属于{bmi_recommendation['category']}体型。顺筋按摩已启动，采用力度倍率 "
+                        f"{float(bmi_recommendation['factor']):.2f}×，"
+                        f"基准 {bmi_baseline_force_n:g} 牛，目标力度 {selected_force_target_n:g} 牛"
+                    )
+                else:
+                    state_message = f"正在启动顺筋按摩，目标力度 {selected_force_target_n:.1f}N"
+                    result_message = f"顺筋按摩任务已启动，目标力度为 {selected_force_target_n:g} 牛"
             else:
                 state_message = (
                     f"正在启动按摩动作，目标力度 {selected_force_target_n:g}N"
@@ -1605,6 +1636,16 @@ class FairinoMassageRuntime:
                 )
                 if resume:
                     result_message = "按摩任务已继续"
+                elif bmi_recommendation is not None:
+                    state_message = (
+                        f"正在启动按摩动作，采用 BMI 建议 {float(bmi_recommendation['factor']):.2f}×，"
+                        f"基准 {bmi_baseline_force_n:.1f}N，目标力度 {selected_force_target_n:.1f}N"
+                    )
+                    result_message = (
+                        f"根据 BMI 建议，您属于{bmi_recommendation['category']}体型。按摩任务已启动，采用力度倍率 "
+                        f"{float(bmi_recommendation['factor']):.2f}×，"
+                        f"基准 {bmi_baseline_force_n:g} 牛，目标力度 {selected_force_target_n:g} 牛"
+                    )
                 elif pending_force_applied:
                     result_message = (
                         f"按摩任务已启动，已使用确认的预设力度 "
@@ -1612,6 +1653,9 @@ class FairinoMassageRuntime:
                     )
                 else:
                     result_message = "按摩任务已启动"
+
+            if bmi_recommendation is not None:
+                logger.info("[FairinoMassage] %s", result_message)
 
             self._write_control_unlocked("continue")
             self._state.update(
@@ -1628,8 +1672,9 @@ class FairinoMassageRuntime:
                 session_force_override_active=(
                     bool(state.get("session_force_override_active"))
                     if resume
-                    else pending_force_applied
+                    else pending_force_applied or bmi_recommendation is not None
                 ),
+                bmi_massage_recommendation=bmi_recommendation,
                 stage=start_stage,
                 current_action="start",
                 current_point_index=start_point_index,
@@ -1658,7 +1703,7 @@ class FairinoMassageRuntime:
                     (
                         bool(state.get("session_force_override_active"))
                         if resume
-                        else pending_force_applied
+                        else pending_force_applied or bmi_recommendation is not None
                     ),
                     start_stage,
                     start_point_index,
