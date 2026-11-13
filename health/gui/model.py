@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QGuiApplication
 
 HEALTH_DIR = Path(__file__).resolve().parents[1]
 if str(HEALTH_DIR) not in sys.path:
@@ -17,6 +18,7 @@ if str(HEALTH_DIR) not in sys.path:
 from massage_profile import MassageRecommendationStore, recommendation_for_bmi
 from vital_alerts import VitalAlertEngine, valid_vital_value
 from data_source import resolve_active_source
+from scale_serial import ScaleSerialAdapter
 
 
 DATABASE_PATH = HEALTH_DIR / "data" / "health_band.sqlite3"
@@ -70,8 +72,8 @@ class BodyMetricsStore:
         height, weight = _number(height_cm), _number(weight_kg)
         if height is None or not 50 <= height <= 250:
             raise ValueError("身高应在 50–250 cm 之间")
-        if weight is None or not 10 <= weight <= 500:
-            raise ValueError("体重应在 10–500 kg 之间")
+        if weight is None or not 0 < weight <= 500:
+            raise ValueError("体重应大于 0 且不超过 500 kg")
         if not recommendation_for_bmi(weight / ((height / 100) ** 2))["available"]:
             raise ValueError("身高体重计算出的 BMI 超出支持范围")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,6 +117,12 @@ class HealthGuiModel(QObject):
         # session's values when a new GUI session opens.
         self._body_entered_this_session = False
         self._state: Dict[str, Any] = {}
+        self._scale_status = "电子秤未连接"
+        self._scale_adapter = ScaleSerialAdapter(self)
+        self._scale_adapter.statusChanged.connect(self._on_scale_status)
+        self._scale_adapter.measurementReceived.connect(self._on_scale_measurement)
+        if isinstance(QGuiApplication.instance(), QGuiApplication):
+            self._scale_adapter.start()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(3000)
@@ -278,11 +286,28 @@ class HealthGuiModel(QObject):
         self.refresh()
 
     def updateBodyMetricsFromDevice(self, height_cm: Any, weight_kg: Any, source: str = "测量设备") -> None:
-        """Future device adapter: persist and reveal measurements for this session."""
+        """Persist a device measurement and reveal it for this GUI session."""
         body = self._body_store.update_from_device(height_cm, weight_kg, source)
         self._massage_recommendation_store.confirm(body["bmi"], body["source"])
         self._body_entered_this_session = True
         self.refresh()
+
+    def _on_scale_status(self, status: str) -> None:
+        self._scale_status = status
+        self.stateChanged.emit()
+
+    def _on_scale_measurement(self, measurement: Any) -> None:
+        if measurement.age_years < 18:
+            self._on_scale_status("电子秤年龄未达到成人范围，本次读数未采用")
+            return
+        try:
+            self.updateBodyMetricsFromDevice(measurement.height_cm, measurement.weight_kg, "电子秤")
+        except ValueError as exc:
+            self._on_scale_status(f"电子秤读数未采用：{exc}")
+            return
+        self._on_scale_status(
+            f"已采用电子秤测量：{measurement.height_cm} cm、{measurement.weight_kg:.1f} kg"
+        )
 
     @pyqtSlot()
     def startReceiver(self) -> None:
@@ -349,6 +374,8 @@ class HealthGuiModel(QObject):
     def bmiText(self): return self._value("bmi", "")
     @pyqtProperty(str, notify=stateChanged)
     def bodySourceText(self): return self._state.get("body_source", "未录入")
+    @pyqtProperty(str, notify=stateChanged)
+    def scaleStatusText(self): return self._scale_status
     @pyqtProperty(str, notify=stateChanged)
     def massageRecommendationText(self):
         recommendation = self._state.get("massage_recommendation") or {}

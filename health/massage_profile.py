@@ -25,10 +25,10 @@ def _number(value: Any) -> Optional[float]:
 
 
 def recommendation_for_bmi(bmi: Any) -> Dict[str, Any]:
-    """Return the conservative Chinese-adult BMI recommendation, if valid."""
+    """Return the configured BMI force recommendation, including mannequin tests."""
     value = _number(bmi)
-    if value is None or not 10 <= value <= 80:
-        return {"available": False, "reason": "需要有效的成人 BMI 才能生成按摩建议"}
+    if value is None or not 5 < value <= 80:
+        return {"available": False, "reason": "BMI 须大于 5 且不超过 80 才能生成按摩建议"}
     if value < 18.5:
         category, factor = "偏瘦", 0.90
     elif value < 24:

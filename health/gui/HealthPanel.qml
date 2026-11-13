@@ -22,7 +22,7 @@ RowLayout {
                 }
             }
             Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: healthModel && healthModel.massageRecommendationText.length > 0 ? 145 : 105; radius: 6; color: "#f8fafc"; border.color: "#e6edf4"
+                Layout.fillWidth: true; Layout.preferredHeight: healthModel && healthModel.massageRecommendationText.length > 0 ? 170 : 130; radius: 6; color: "#f8fafc"; border.color: "#e6edf4"
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 6; spacing: 3
                     RowLayout {
@@ -59,7 +59,7 @@ RowLayout {
                                 background: Rectangle { radius: 3; color: "transparent"; border.color: "#d8e2ed" }
                             }
                             Text { text: "体重"; font.pixelSize: 8; color: "#64748b" }
-                            TextField { id: weightInput; Layout.preferredWidth: 43; Layout.preferredHeight: 22; padding: 0; placeholderText: "kg"; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; selectByMouse: true; validator: DoubleValidator { bottom: 10; top: 500; decimals: 1 }
+                            TextField { id: weightInput; Layout.preferredWidth: 43; Layout.preferredHeight: 22; padding: 0; placeholderText: "kg"; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; selectByMouse: true; validator: DoubleValidator { bottom: 0.1; top: 500; decimals: 1 }
                                 background: Rectangle { radius: 3; color: "transparent"; border.color: "#d8e2ed" }
                             }
                             Item { Layout.fillWidth: true }
@@ -70,6 +70,7 @@ RowLayout {
                             }
                         }
                     }
+                    Text { text: healthModel ? healthModel.scaleStatusText : ""; font.pixelSize: 9; color: "#64748b"; Layout.fillWidth: true; Layout.preferredHeight: 22; wrapMode: Text.WordWrap; verticalAlignment: Text.AlignVCenter }
                 }
             }
             GridLayout {

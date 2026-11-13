@@ -11,6 +11,7 @@ from gui import model as gui_model
 from gui.model import BodyMetricsStore, HealthGuiModel
 from massage_profile import MassageRecommendationStore, recommendation_for_bmi
 from data_source import ActiveSource
+from scale_protocol import ScaleMeasurement
 
 
 class BodyMetricsStoreTests(unittest.TestCase):
@@ -29,6 +30,8 @@ class BodyMetricsStoreTests(unittest.TestCase):
             self.assertEqual(summary["bmi"], 25.0)
 
     def test_bmi_massage_profile_uses_confirmed_single_use_recommendation(self):
+        self.assertFalse(recommendation_for_bmi(5)["available"])
+        self.assertEqual(recommendation_for_bmi(5.01)["factor"], 0.90)
         self.assertEqual(recommendation_for_bmi(18.4)["factor"], 0.90)
         self.assertEqual(recommendation_for_bmi(23.9)["factor"], 1.00)
         self.assertEqual(recommendation_for_bmi(24.0)["factor"], 1.05)
@@ -40,6 +43,19 @@ class BodyMetricsStoreTests(unittest.TestCase):
             applied = store.consume(10)
             self.assertEqual(applied["requested_force_n"], 11.0)
             self.assertFalse(store.pending()["available"])
+
+    def test_light_mannequin_is_accepted_but_bmi_five_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = BodyMetricsStore(Path(directory) / "body_metrics.json")
+            summary = store.set_manual(88, 6.4)
+            self.assertAlmostEqual(summary["bmi"], 6.4 / 0.88**2)
+            recommendation = MassageRecommendationStore(Path(directory) / "recommendation.json")
+            recommendation.confirm(summary["bmi"], "电子秤")
+            self.assertAlmostEqual(recommendation.consume(2)["requested_force_n"], 1.8)
+            with self.assertRaises(ValueError):
+                store.set_manual(100, 5)
+            with self.assertRaises(ValueError):
+                store.set_manual(100, 0)
 
 
 class HealthGuiModelTests(unittest.TestCase):
@@ -260,6 +276,35 @@ class HealthGuiModelTests(unittest.TestCase):
                 self.assertEqual(len(model.spo2Trend), 12)
                 self.assertEqual(model.badgeLabel, "数据正常")
                 model._timer.stop()
+
+    def test_scale_measurement_accepts_light_mannequin_and_adult(self):
+        app = QCoreApplication.instance() or QCoreApplication([])
+        self.assertIsNotNone(app)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body_path = root / "body.json"
+            recommendation_store = MassageRecommendationStore(root / "recommendation.json")
+            with patch.object(gui_model, "DATABASE_PATH", root / "missing.sqlite3"), \
+                 patch.object(gui_model, "BODY_METRICS_PATH", body_path), \
+                 patch.object(gui_model, "SETTINGS_PATH", root / "settings.json"), \
+                 patch.object(gui_model, "MassageRecommendationStore", return_value=recommendation_store), \
+                 patch.object(HealthGuiModel, "_receiver_status", return_value={"running": False, "text": "测试"}):
+                model = HealthGuiModel()
+                try:
+                    model._on_scale_measurement(ScaleMeasurement(25, 88, 6.4, b""))
+                    self.assertTrue(body_path.exists())
+                    self.assertEqual(model.heightText, "88 cm")
+                    self.assertEqual(model.weightText, "6.4 kg")
+                    self.assertIn("已采用", model.scaleStatusText)
+                    self.assertEqual(recommendation_store.pending()["factor"], 0.90)
+                    model._on_scale_measurement(ScaleMeasurement(25, 170, 70, b""))
+                    self.assertEqual(model.heightText, "170 cm")
+                    self.assertEqual(model.weightText, "70.0 kg")
+                    self.assertEqual(model.bodySourceText, "电子秤")
+                    self.assertEqual(recommendation_store.pending()["factor"], 1.05)
+                finally:
+                    model._scale_adapter.stop()
+                    model._timer.stop()
 
 
 if __name__ == "__main__":
